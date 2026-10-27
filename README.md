@@ -8,10 +8,10 @@ Specs written for SDD are full of stable identifiers (`WDG-CCH-001`, `AC-WDG-CCH
 |---|---|---|
 | Exact ids | "What does WDG-CCH-001 say?" | id router → entity table |
 | Keyword (BM25) | Identifiers, code names, exact phrases | SQLite FTS5 |
-| Vectors *(next)* | Questions phrased differently from the spec | local embeddings + sqlite-vec, fused with RRF |
+| Vectors | Questions phrased differently from the spec | local `bge-base-en-v1.5` embeddings in sqlite-vec, fused with BM25 by RRF, optional `bge-reranker-base` cross-encoder |
 | Graph | Impact analysis, coverage, drift | `entities` / `edges` tables, BFS |
 
-Everything runs locally in one Node process with one SQLite file: no server, no hosted vector store, no LLM API key. The calling agent (e.g. Claude Code) writes the answer from the cited chunks.
+Everything runs locally in one Node process with one SQLite file: no server, no hosted vector store, no LLM API key. Embedding and reranking models are ONNX weights downloaded once into `.cache/models` and run on the CPU, so indexed text never leaves the machine. The calling agent (e.g. Claude Code) writes the answer from the cited chunks; when nothing scores above the calibrated threshold, results are marked low confidence so the agent says "not covered" instead of guessing.
 
 ## Quick start
 
@@ -31,7 +31,7 @@ pnpm cli stats
 claude mcp add spec-brain -- /absolute/path/to/spec-brain/bin/spec-brain-mcp
 ```
 
-Tools: `search_specs`, `get_requirement`, `trace`. All are read-only and every result leads with a `path#anchor` citation and the document's status.
+Tools: `search_specs`, `get_requirement`, `trace`. All are read-only and every result leads with a `path#anchor` citation and the document's status. `search_specs` reranks by default; set `SPEC_BRAIN_RERANK=0` for faster, unreranked results.
 
 ## What gets indexed
 
@@ -61,6 +61,14 @@ Pages are typed (`aad` architecture approach documents, `standard` guardrails/gu
 
 Re-ingest is incremental by content hash; each file's chunks, entities and edges are replaced as a unit. `ingest --rebuild` recreates the index after a schema change.
 
+## Evaluation
+
+```sh
+pnpm cli eval --golden eval/golden.jsonl --modes grep,bm25,vector,hybrid,hybrid+rerank
+```
+
+A golden set is one JSON question per line with the documents that answer it (`eval/golden.example.jsonl` shows the format; real sets stay local). The report gives hit@1/3/8 and MRR at document level per retrieval mode and per question category, how many negative questions were flagged low confidence (and how many answerable ones were wrongly flagged), latency, and the best low-confidence threshold for each mode. `grep` is the baseline: documents ranked by how many query terms they contain. Full per-question results go to `reports/`.
+
 ## Data safety
 
 This repository holds **code only**. `data/`, `corpus/`, `reports/`, `eval/golden*`, `*.db` and `spec-brain.config.json` are gitignored, and `.githooks/pre-commit` (enabled by `pnpm install`) refuses to commit them. Organisation-specific markers can be listed one regex per line in the untracked `.githooks/deny-patterns.local`; staged lines matching them are rejected. `gitleaks` runs too when installed. Test fixtures are synthetic.
@@ -69,5 +77,5 @@ This repository holds **code only**. `data/`, `corpus/`, `reports/`, `eval/golde
 
 1. ✅ SDD ingest, entity graph, id lookup, trace, BM25 search, MCP server
 2. ✅ Confluence source: MCP-relayed sync to local markdown, page typing and approval status, shared section taxonomy
-3. Local embeddings + sqlite-vec, RRF fusion, optional cross-encoder rerank; evaluation harness with ablations against plain grep
+3. ✅ Local embeddings + sqlite-vec, RRF fusion, optional cross-encoder rerank, low-confidence signal; evaluation harness with ablations against plain grep
 4. `get_standards`, `find_precedent`, drift report (undefined references, ACs without tests, status vs delivery), decision ledger

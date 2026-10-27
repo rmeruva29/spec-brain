@@ -3,13 +3,20 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { loadConfig } from "../config.ts";
 import { openDb } from "../db.ts";
-import { formatHits, formatRequirement, formatTrace } from "../format.ts";
+import { formatRequirement, formatResult, formatTrace } from "../format.ts";
+import { createEmbedder, createReranker, lazy } from "../models.ts";
 import { getRequirement, trace } from "../retrieval/lookup.ts";
 import { search } from "../retrieval/search.ts";
 
 // stdout carries the MCP protocol; nothing else may print to it.
 const config = loadConfig();
 const db = openDb(config.dbPath, { readonly: true });
+// Models load on the first search, not at startup, so the server answers its handshake immediately.
+const embedder = lazy(() => createEmbedder(config));
+const reranker = lazy(() => createReranker(config));
+// "guard" (default): fused ranking, reranker only scores the top hits for the low-confidence signal
+// (~0.75 s). "rank": rerank 30 candidates (~3.7 s, no better ranking on the golden set). "0": no reranker.
+const RERANK = (process.env.SPEC_BRAIN_RERANK ?? "guard") as "guard" | "rank" | "0";
 
 const server = new McpServer({ name: "spec-brain", version: "0.1.0" });
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
@@ -24,7 +31,7 @@ server.registerTool(
         "agent and skill definitions. " +
       "Requirement and acceptance-criteria ids in the query (e.g. WDG-CCH-001, AC-WDG-CCH-003) are resolved exactly first. " +
       "Every result starts with a citation (path#anchor) and the document status; cite those when you use a result, " +
-      "and say so when nothing relevant comes back rather than guessing.",
+      "and when the result is marked low confidence, say the indexed material does not cover the question rather than guessing.",
     inputSchema: {
       query: z.string().min(2).describe("Natural-language question, keywords, or requirement/AC ids"),
       k: z.number().int().min(1).max(25).optional().describe("Number of results (default 8)"),
@@ -47,7 +54,16 @@ server.registerTool(
   },
   async ({ query, k, doc_types, domain, section_kinds, include_archived }) =>
     text(
-      formatHits(search(db, query, { k, filters: { docTypes: doc_types, domain, sectionKinds: section_kinds, includeArchived: include_archived } })),
+      formatResult(
+        await search(db, query, {
+          k,
+          filters: { docTypes: doc_types, domain, sectionKinds: section_kinds, includeArchived: include_archived },
+          embedder,
+          reranker: RERANK === "0" ? undefined : reranker,
+          rerankUse: RERANK === "rank" ? "rank" : "guard",
+          rerankCandidates: config.reranker.candidates,
+        }),
+      ),
     ),
 );
 

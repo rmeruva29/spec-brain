@@ -5,7 +5,7 @@ set -eu
 staged=$(git diff --cached --name-only --diff-filter=ACMR)
 [ -z "$staged" ] && exit 0
 
-blocked=$(printf '%s\n' "$staged" | grep -E '^(data|corpus|reports)/|^eval/golden|\.db(-wal|-shm)?$|^spec-brain\.config\.json$' || true)
+blocked=$(printf '%s\n' "$staged" | grep -E '^(data|corpus|reports)/|^eval/golden|\.db(-wal|-shm)?$|^spec-brain\.config\.json$' | grep -vx 'eval/golden.example.jsonl' || true)
 if [ -n "$blocked" ]; then
   echo "pre-commit: refusing to commit local corpus/index/eval files:" >&2
   printf '  %s\n' $blocked >&2

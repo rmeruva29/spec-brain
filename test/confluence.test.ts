@@ -169,8 +169,8 @@ describe("wiki ingest", () => {
     expect(out.sort()).toEqual(["links_to:DOC:wiki:1003.md", "part_of:DOC:wiki:1001.md", "references:ACME-42", "references:WDG-CCH-001"]);
   });
 
-  it("cites the page URL with the Confluence heading anchor and filters by section kind", () => {
-    const [hit] = search(db, "correlation id logging", { filters: { sectionKinds: ["logging"] } });
+  it("cites the page URL with the Confluence heading anchor and filters by section kind", async () => {
+    const [hit] = (await search(db, "correlation id logging", { filters: { sectionKinds: ["logging"] } })).hits;
     expect(hit).toMatchObject({ url: "https://example.atlassian.net/wiki/pages/viewpage.action?pageId=1002", anchor: "Logging", title: "Architecture Approach - Widget Relay" });
   });
 });

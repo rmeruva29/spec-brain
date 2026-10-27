@@ -36,6 +36,25 @@ const Source = z.discriminatedUnion("kind", [SddRepoSource, ConfluenceExportSour
 
 const ConfigSchema = z.object({
   dbPath: z.string().default("data/spec-brain.db"),
+  /** Embeddings survive index rebuilds here, keyed by chunk content hash and model. */
+  embeddingCachePath: z.string().default("data/embedding-cache.db"),
+  modelCacheDir: z.string().default(".cache/models"),
+  embedding: z
+    .object({
+      model: z.string().default("Xenova/bge-base-en-v1.5"),
+      dtype: z.string().default("q8"),
+      /** bge-v1.5 instruction for short queries against passages. */
+      queryPrefix: z.string().default("Represent this sentence for searching relevant passages: "),
+    })
+    .prefault({}),
+  reranker: z
+    .object({
+      model: z.string().default("Xenova/bge-reranker-base"),
+      dtype: z.string().default("q8"),
+      /** Fused candidates scored by the cross-encoder. */
+      candidates: z.number().int().min(5).max(100).default(30),
+    })
+    .prefault({}),
   sources: z.array(Source).min(1),
 });
 
@@ -58,7 +77,10 @@ export function loadConfig(path = process.env.SPEC_BRAIN_CONFIG ?? "spec-brain.c
   const base = dirname(file);
   const config = ConfigSchema.parse(JSON.parse(readFileSync(file, "utf8")));
   return {
+    ...config,
     dbPath: expand(config.dbPath, base),
+    embeddingCachePath: expand(config.embeddingCachePath, base),
+    modelCacheDir: expand(config.modelCacheDir, base),
     sources: config.sources.map((s) => ({ ...s, root: expand(s.root, base) })),
   };
 }

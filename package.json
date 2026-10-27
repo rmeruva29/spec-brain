@@ -18,12 +18,16 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "better-sqlite3",
-      "esbuild"
+      "esbuild",
+      "onnxruntime-node",
+      "protobufjs"
     ]
   },
   "dependencies": {
+    "@huggingface/transformers": "4.3.1",
     "@modelcontextprotocol/sdk": "1.32.2",
     "better-sqlite3": "13.0.3",
+    "sqlite-vec": "0.1.9",
     "zod": "4.6.7"
   },
   "devDependencies": {

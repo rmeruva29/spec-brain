@@ -1,5 +1,5 @@
 import type { Citation, EntityView, RequirementView, TraceResult } from "./retrieval/lookup.ts";
-import type { Hit } from "./retrieval/search.ts";
+import type { Hit, SearchResult } from "./retrieval/search.ts";
 
 // Plain-text renderings shared by the CLI and the MCP server. Every block leads with a citation
 // so an agent can quote where a fact came from.
@@ -20,6 +20,14 @@ export function formatHits(hits: Hit[]): string {
       return `${head}\n${h.section ? `Section: ${h.section}\n` : ""}${h.text}`;
     })
     .join("\n\n---\n\n");
+}
+
+export function formatResult(r: SearchResult): string {
+  const note = r.lowConfidence
+    ? `Low confidence (best match ${r.confidence?.toFixed(2)}): nothing in the index closely matches this question. ` +
+      "Say the indexed specs and docs do not cover it rather than answering from these results.\n\n"
+    : "";
+  return note + formatHits(r.hits);
 }
 
 const line = (e: EntityView) => `- ${e.id}${e.title ? `: ${e.title}` : ""}${e.citation ? ` (${cite(e.citation)})` : ""}`;

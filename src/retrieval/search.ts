@@ -1,5 +1,7 @@
 import type { DB } from "../db.ts";
 import { AC_RE, REQ_RE } from "../ids.ts";
+import type { Embedder, Reranker } from "../models.ts";
+import { hasVectors } from "../vectors.ts";
 import { getEntity, normalizeId } from "./lookup.ts";
 
 export interface SearchFilters {
@@ -15,6 +17,7 @@ export interface SearchFilters {
 export interface Hit {
   chunkId: number;
   entityId: string | null;
+  source: string;
   path: string;
   url: string | null;
   title: string | null;
@@ -26,7 +29,7 @@ export interface Hit {
   context: string;
   text: string;
   score: number;
-  via: "id" | "keyword";
+  via: "id" | "keyword" | "vector" | "hybrid";
 }
 
 const STOPWORDS = new Set(
@@ -44,7 +47,7 @@ export function toFtsQuery(query: string): string | null {
   return [...new Set(terms)].map((t) => `"${t.replace(/"/g, "")}"`).join(" OR ");
 }
 
-const HIT_COLUMNS = `c.id AS chunkId, c.entity_id AS entityId, d.path, d.url, d.title, c.anchor, c.section,
+const HIT_COLUMNS = `c.id AS chunkId, c.entity_id AS entityId, d.source, d.path, d.url, d.title, c.anchor, c.section,
   c.section_kind AS sectionKind, d.doc_type AS docType, d.status, c.context, c.text`;
 
 function filterSql(f: SearchFilters): { sql: string; args: unknown[] } {
@@ -101,14 +104,122 @@ export function idHits(db: DB, query: string): Hit[] {
   return hits;
 }
 
+export type Mode = "bm25" | "vector" | "hybrid";
+
+export interface SearchOptions {
+  k?: number;
+  filters?: SearchFilters;
+  mode?: Mode;
+  embedder?: () => Promise<Embedder>;
+  /** When given, fused candidates are re-scored by a cross-encoder. */
+  reranker?: () => Promise<Reranker>;
+  /**
+   * "rank" (default) reorders the fused candidates by reranker score. "guard" keeps the fused order and
+   * only scores the top few hits, as a cheap relevance check for the low-confidence signal.
+   */
+  rerankUse?: "rank" | "guard";
+  rerankCandidates?: number;
+  /** At most this many chunks per document, so one long page cannot fill every slot. */
+  maxPerDoc?: number;
+}
+
+export interface SearchResult {
+  hits: Hit[];
+  mode: string;
+  /** Top relevance score (reranker probability or cosine similarity); null for keyword-only search. */
+  confidence: number | null;
+  /** Nothing in the index matches the question closely; callers should say so rather than guess. */
+  lowConfidence: boolean;
+}
+
+// Below these, the best match is not about the question. Calibrated with `spec-brain eval` on the
+// 2026-10-27 golden set (46 questions, 7 negative): guard sits midway between the highest negative
+// (0.027) and the lowest answerable question (0.035), a thin margin to re-check as the set grows.
+export const LOW_CONFIDENCE = { rerank: 0.085, guard: 0.03, cosine: 0.572 };
+const GUARD_CANDIDATES = 5;
+
+export function vectorSearch(db: DB, queryVector: Float32Array, opts: { k?: number; filters?: SearchFilters } = {}): Hit[] {
+  if (!hasVectors(db)) return [];
+  const k = opts.k ?? 30;
+  const f = opts.filters ?? {};
+  const { sql, args } = filterSql(f);
+  // vec0 finds neighbours before metadata filters apply, so filtered searches look further.
+  const knn = f.docTypes?.length || f.sectionKinds?.length || f.domain || f.project ? 2000 : Math.max(200, k * 4);
+  const rows = db
+    .prepare(
+      `WITH knn AS (SELECT rowid, distance FROM chunk_vec WHERE embedding MATCH ? AND k = ?)
+       SELECT ${HIT_COLUMNS}, 1 - knn.distance AS score
+         FROM knn JOIN chunks c ON c.id = knn.rowid JOIN documents d ON d.id = c.doc_id
+        WHERE 1 = 1 ${sql}
+        ORDER BY knn.distance LIMIT ?`,
+    )
+    .all(queryVector, knn, ...args, k) as Omit<Hit, "via">[];
+  return rows.map((r) => ({ ...r, via: "vector" as const }));
+}
+
+/** Reciprocal rank fusion: rank positions matter, raw scores of different retrievers are not comparable. */
+export function rrf(lists: Hit[][], k = 60): Hit[] {
+  const fused = new Map<number, { hit: Hit; score: number }>();
+  for (const list of lists) {
+    list.forEach((hit, rank) => {
+      const entry = fused.get(hit.chunkId) ?? { hit: { ...hit, via: "hybrid" as const }, score: 0 };
+      entry.score += 1 / (k + rank + 1);
+      fused.set(hit.chunkId, entry);
+    });
+  }
+  return [...fused.values()].sort((a, b) => b.score - a.score).map((e) => ({ ...e.hit, score: e.score }));
+}
+
+function capPerDoc(hits: Hit[], max: number): Hit[] {
+  const counts = new Map<string, number>();
+  return hits.filter((h) => {
+    const key = h.url ?? h.path;
+    const n = counts.get(key) ?? 0;
+    counts.set(key, n + 1);
+    return n < max;
+  });
+}
+
 /**
- * Query router: exact id lookups first, then BM25 keyword hits. Vector search and fusion slot in
- * here once embeddings exist.
+ * Query router: ids named in the query resolve exactly and come first; the rest is BM25, vectors, or
+ * both fused with RRF, optionally re-scored by a cross-encoder.
  */
-export function search(db: DB, query: string, opts: { k?: number; filters?: SearchFilters } = {}): Hit[] {
+export async function search(db: DB, query: string, opts: SearchOptions = {}): Promise<SearchResult> {
   const k = opts.k ?? 8;
+  const wanted = opts.mode ?? "hybrid";
+  const mode: Mode = wanted !== "bm25" && (!opts.embedder || !hasVectors(db)) ? "bm25" : wanted;
   const exact = idHits(db, query);
+  const pool = Math.max(50, k * 5);
+
+  const lists: Hit[][] = [];
+  if (mode !== "vector") lists.push(keywordSearch(db, query, { k: pool, filters: opts.filters }));
+  if (mode !== "bm25") {
+    const [qv] = await (await opts.embedder!()).embed([query], "query");
+    lists.push(vectorSearch(db, qv!, { k: pool, filters: opts.filters }));
+  }
+  let ranked = lists.length === 1 ? lists[0]! : rrf(lists);
+  let confidence: number | null = mode === "bm25" ? null : (lists.at(-1)![0]?.score ?? 0);
+  let label: string = mode;
+
+  const guard = opts.rerankUse === "guard";
+  if (opts.reranker && ranked.length) {
+    const reranker = await opts.reranker();
+    const candidates = capPerDoc(ranked, opts.maxPerDoc ?? 3).slice(0, guard ? GUARD_CANDIDATES : (opts.rerankCandidates ?? 30));
+    const scores = await reranker.score(
+      query,
+      candidates.map((h) => `${h.context}\n${h.text}`.slice(0, 2000)),
+    );
+    if (guard) confidence = Math.max(...scores);
+    else {
+      ranked = candidates.map((h, i) => ({ ...h, score: scores[i]! })).sort((a, b) => b.score - a.score);
+      confidence = ranked[0]?.score ?? 0;
+    }
+    label = `${mode}+${guard ? "guard" : "rerank"}`;
+  }
+
   const seen = new Set(exact.map((h) => h.chunkId));
-  const keyword = keywordSearch(db, query, { k: k * 3, filters: opts.filters }).filter((h) => !seen.has(h.chunkId));
-  return [...exact, ...keyword].slice(0, k);
+  const hits = [...exact, ...capPerDoc(ranked, opts.maxPerDoc ?? 3).filter((h) => !seen.has(h.chunkId))].slice(0, k);
+  const threshold = !opts.reranker ? LOW_CONFIDENCE.cosine : guard ? LOW_CONFIDENCE.guard : LOW_CONFIDENCE.rerank;
+  const lowConfidence = !exact.length && confidence !== null && confidence < threshold;
+  return { hits, mode: label, confidence: exact.length ? 1 : confidence, lowConfidence };
 }

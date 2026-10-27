@@ -104,18 +104,18 @@ describe("traceability", () => {
 });
 
 describe("search", () => {
-  it("returns the defining chunk first for an id in the query", () => {
-    const [first] = search(db, "what does WDG-CCH-002 require?");
+  it("returns the defining chunk first for an id in the query", async () => {
+    const [first] = (await search(db, "what does WDG-CCH-002 require?")).hits;
     expect(first).toMatchObject({ entityId: "WDG-CCH-002", via: "id" });
   });
 
-  it("finds prose by keyword with a citation", () => {
-    const hits = search(db, "viewer identifiers in logs");
+  it("finds prose by keyword with a citation", async () => {
+    const { hits } = await search(db, "viewer identifiers in logs");
     expect(hits.some((h) => h.anchor === "security-requirements")).toBe(true);
   });
 
-  it("quotes every term so user input cannot inject FTS syntax", () => {
+  it("quotes every term so user input cannot inject FTS syntax", async () => {
     expect(toFtsQuery('cache* OR "x" NEAR(a b)')).toBe('"cache" OR "NEAR"');
-    expect(search(db, '") OR *')).toEqual([]);
+    expect((await search(db, '") OR *')).hits).toEqual([]);
   });
 });

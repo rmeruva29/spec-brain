@@ -1,10 +1,11 @@
 import Database from "better-sqlite3";
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
+import * as sqliteVec from "sqlite-vec";
 
 export type DB = Database.Database;
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 // `origin` on entities and edges is the document id (or test-file id) that produced them,
 // so re-ingesting one file replaces exactly what that file contributed to the graph.
@@ -69,6 +70,12 @@ CREATE TABLE edges (
 CREATE INDEX edges_dst ON edges(dst);
 CREATE INDEX edges_origin ON edges(origin);
 
+-- Settings of derived structures, e.g. which embedding model filled chunk_vec.
+CREATE TABLE meta (
+  key    TEXT PRIMARY KEY,
+  value  TEXT NOT NULL
+);
+
 CREATE TABLE scanned_files (
   id            TEXT PRIMARY KEY,
   content_hash  TEXT NOT NULL
@@ -78,6 +85,8 @@ CREATE TABLE scanned_files (
 export function openDb(path: string, opts: { readonly?: boolean } = {}): DB {
   if (path !== ":memory:" && !opts.readonly) mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path, { readonly: opts.readonly ?? false, fileMustExist: opts.readonly ?? false });
+  // Every connection loads sqlite-vec: chunk deletes fire a trigger on the vector table.
+  sqliteVec.load(db);
   db.pragma("foreign_keys = ON");
   if (opts.readonly) return db;
   db.pragma("journal_mode = WAL");

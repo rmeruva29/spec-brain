@@ -5,6 +5,7 @@ data/
 corpus/
 reports/
 eval/golden*
+!eval/golden.example.jsonl
 *.db
 *.db-shm
 *.db-wal
