@@ -1,0 +1,16 @@
+node_modules/
+
+# Local corpus, index and evaluation data never leave this machine.
+data/
+corpus/
+reports/
+eval/golden*
+*.db
+*.db-shm
+*.db-wal
+spec-brain.config.json
+.githooks/deny-patterns.local
+
+.cache/
+.env*
+.DS_Store

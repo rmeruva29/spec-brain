@@ -1,0 +1,14 @@
+{
+  "dbPath": "data/spec-brain.db",
+  "sources": [
+    {
+      "kind": "sdd-repo",
+      "name": "my-project",
+      "project": "My Project",
+      "root": "~/path/to/sdd-repo",
+      "include": ["specs", "docs", ".claude/agents", ".claude/skills", "CLAUDE.md", "AGENTS.md"],
+      "testRoots": ["apps", "services"],
+      "jiraProjects": ["PROJ"]
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "name": "spec-brain",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hybrid retrieval (BM25 + vectors + traceability graph) over spec-driven-development repos and architecture docs, served to coding agents over MCP.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "prepare": "git config core.hooksPath .githooks",
+    "cli": "tsx src/cli.ts",
+    "ingest": "tsx src/cli.ts ingest",
+    "mcp": "tsx src/mcp/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "better-sqlite3": "13.0.3",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "22.20.5",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  }
+}

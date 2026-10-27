@@ -1,0 +1,5 @@
+#!/bin/sh
+# Launches the MCP server from any working directory (Claude Code starts it in the project being worked on).
+root=$(cd "$(dirname "$0")/.." && pwd)
+export SPEC_BRAIN_CONFIG="${SPEC_BRAIN_CONFIG:-$root/spec-brain.config.json}"
+exec "$root/node_modules/.bin/tsx" "$root/src/mcp/server.ts"

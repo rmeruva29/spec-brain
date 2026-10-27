@@ -1,0 +1,29 @@
+#!/bin/sh
+# This repository holds code only. Indexed content, the index itself and evaluation data stay local.
+set -eu
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+blocked=$(printf '%s\n' "$staged" | grep -E '^(data|corpus|reports)/|^eval/golden|\.db(-wal|-shm)?$|^spec-brain\.config\.json$' || true)
+if [ -n "$blocked" ]; then
+  echo "pre-commit: refusing to commit local corpus/index/eval files:" >&2
+  printf '  %s\n' $blocked >&2
+  exit 1
+fi
+
+# Organisation-specific markers (domains, product names) live in an untracked file so the
+# patterns themselves are never published. One extended regex per line.
+deny=.githooks/deny-patterns.local
+if [ -f "$deny" ]; then
+  hits=$(git diff --cached -U0 --diff-filter=ACMR | grep -E '^\+[^+]' | grep -inEf "$deny" || true)
+  if [ -n "$hits" ]; then
+    echo "pre-commit: staged lines match .githooks/deny-patterns.local; remove internal content before committing." >&2
+    echo "$hits" | cut -c1-120 >&2
+    exit 1
+  fi
+fi
+
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --pre-commit --staged --redact --no-banner
+fi
