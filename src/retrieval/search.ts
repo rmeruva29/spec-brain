@@ -6,7 +6,9 @@ export interface SearchFilters {
   project?: string;
   docTypes?: string[];
   domain?: string;
-  /** Archived documents and withdrawn requirements are excluded unless this is set. */
+  /** Restrict to section kinds from the shared taxonomy, e.g. ["logging", "monitoring"]. */
+  sectionKinds?: string[];
+  /** Archived documents, templates, and withdrawn or superseded material are excluded unless this is set. */
   includeArchived?: boolean;
 }
 
@@ -14,8 +16,11 @@ export interface Hit {
   chunkId: number;
   entityId: string | null;
   path: string;
+  url: string | null;
+  title: string | null;
   anchor: string | null;
   section: string | null;
+  sectionKind: string | null;
   docType: string;
   status: string | null;
   context: string;
@@ -39,8 +44,8 @@ export function toFtsQuery(query: string): string | null {
   return [...new Set(terms)].map((t) => `"${t.replace(/"/g, "")}"`).join(" OR ");
 }
 
-const HIT_COLUMNS = `c.id AS chunkId, c.entity_id AS entityId, d.path, c.anchor, c.section, d.doc_type AS docType,
-  d.status, c.context, c.text`;
+const HIT_COLUMNS = `c.id AS chunkId, c.entity_id AS entityId, d.path, d.url, d.title, c.anchor, c.section,
+  c.section_kind AS sectionKind, d.doc_type AS docType, d.status, c.context, c.text`;
 
 function filterSql(f: SearchFilters): { sql: string; args: unknown[] } {
   const clauses: string[] = [];
@@ -57,7 +62,11 @@ function filterSql(f: SearchFilters): { sql: string; args: unknown[] } {
     clauses.push(`d.doc_type IN (${f.docTypes.map(() => "?").join(",")})`);
     args.push(...f.docTypes);
   }
-  if (!f.includeArchived) clauses.push("d.doc_type <> 'archive' AND COALESCE(d.status, '') <> 'withdrawn'");
+  if (f.sectionKinds?.length) {
+    clauses.push(`c.section_kind IN (${f.sectionKinds.map(() => "?").join(",")})`);
+    args.push(...f.sectionKinds);
+  }
+  if (!f.includeArchived) clauses.push("d.doc_type NOT IN ('archive', 'template') AND COALESCE(d.status, '') NOT IN ('withdrawn', 'superseded')");
   return { sql: clauses.length ? `AND ${clauses.join(" AND ")}` : "", args };
 }
 

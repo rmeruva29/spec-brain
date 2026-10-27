@@ -18,12 +18,30 @@ const SddRepoSource = z.object({
   jiraProjects: z.array(z.string()).default([]),
 });
 
+const ConfluenceExportSource = z.object({
+  kind: z.literal("confluence-export"),
+  name: z.string().regex(/^[a-z0-9-]+$/),
+  project: z.string(),
+  /** Local directory the sync writes `<pageId>.md` files and `manifest.json` into. */
+  root: z.string(),
+  /** Atlassian site host, e.g. "example.atlassian.net". */
+  site: z.string(),
+  rootPageId: z.string().regex(/^\d+$/),
+  /** Pages whose own or ancestor title matches one of these regexes are not synced. */
+  excludeTitles: z.array(z.string()).default([]),
+  jiraProjects: z.array(z.string()).default([]),
+});
+
+const Source = z.discriminatedUnion("kind", [SddRepoSource, ConfluenceExportSource]);
+
 const ConfigSchema = z.object({
   dbPath: z.string().default("data/spec-brain.db"),
-  sources: z.array(SddRepoSource).min(1),
+  sources: z.array(Source).min(1),
 });
 
 export type SddRepoConfig = z.infer<typeof SddRepoSource>;
+export type ConfluenceExportConfig = z.infer<typeof ConfluenceExportSource>;
+export type SourceConfig = z.infer<typeof Source>;
 export type Config = z.infer<typeof ConfigSchema>;
 
 function expand(path: string, base: string): string {

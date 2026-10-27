@@ -4,13 +4,19 @@ import type { Hit } from "./retrieval/search.ts";
 // Plain-text renderings shared by the CLI and the MCP server. Every block leads with a citation
 // so an agent can quote where a fact came from.
 
-export const cite = (c: Pick<Citation, "path" | "anchor">) => (c.anchor ? `${c.path}#${c.anchor}` : c.path);
+/** Wiki pages cite their URL (with the heading anchor); repository files cite path#anchor. */
+export const cite = (c: Pick<Citation, "path" | "url" | "anchor">) => {
+  const base = c.url ?? c.path;
+  return c.anchor ? `${base}#${c.anchor}` : base;
+};
 
 export function formatHits(hits: Hit[]): string {
   if (!hits.length) return "No matches in the indexed specs.";
   return hits
     .map((h, i) => {
-      const head = [`[${i + 1}] ${cite(h)}`, h.entityId, h.docType, h.status && `status: ${h.status}`].filter(Boolean).join(" · ");
+      const head = [`[${i + 1}] ${cite(h)}`, h.url && h.title, h.entityId, h.docType, h.status && `status: ${h.status}`]
+        .filter(Boolean)
+        .join(" · ");
       return `${head}\n${h.section ? `Section: ${h.section}\n` : ""}${h.text}`;
     })
     .join("\n\n---\n\n");

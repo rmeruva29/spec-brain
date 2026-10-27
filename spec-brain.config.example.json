@@ -6,9 +6,35 @@
       "name": "my-project",
       "project": "My Project",
       "root": "~/path/to/sdd-repo",
-      "include": ["specs", "docs", ".claude/agents", ".claude/skills", "CLAUDE.md", "AGENTS.md"],
-      "testRoots": ["apps", "services"],
-      "jiraProjects": ["PROJ"]
+      "include": [
+        "specs",
+        "docs",
+        ".claude/agents",
+        ".claude/skills",
+        "CLAUDE.md",
+        "AGENTS.md"
+      ],
+      "testRoots": [
+        "apps",
+        "services"
+      ],
+      "jiraProjects": [
+        "PROJ"
+      ]
+    },
+    {
+      "kind": "confluence-export",
+      "name": "team-wiki",
+      "project": "Team Wiki",
+      "root": "corpus/confluence/team-wiki",
+      "site": "example.atlassian.net",
+      "rootPageId": "123456789",
+      "excludeTitles": [
+        "^Trash$"
+      ],
+      "jiraProjects": [
+        "PROJ"
+      ]
     }
   ]
 }

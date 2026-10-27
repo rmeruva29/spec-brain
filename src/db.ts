@@ -1,10 +1,10 @@
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 
 export type DB = Database.Database;
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 // `origin` on entities and edges is the document id (or test-file id) that produced them,
 // so re-ingesting one file replaces exactly what that file contributed to the graph.
@@ -14,6 +14,7 @@ CREATE TABLE documents (
   source        TEXT NOT NULL,
   project       TEXT NOT NULL,
   path          TEXT NOT NULL,
+  url           TEXT,
   title         TEXT,
   doc_type      TEXT NOT NULL,
   domain        TEXT,
@@ -27,6 +28,7 @@ CREATE TABLE chunks (
   doc_id        TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   ord           INTEGER NOT NULL,
   section       TEXT,
+  section_kind  TEXT,
   anchor        TEXT,
   entity_id     TEXT,
   context       TEXT NOT NULL,
@@ -35,6 +37,7 @@ CREATE TABLE chunks (
 );
 CREATE INDEX chunks_doc ON chunks(doc_id);
 CREATE INDEX chunks_entity ON chunks(entity_id);
+CREATE INDEX chunks_section_kind ON chunks(section_kind);
 
 CREATE VIRTUAL TABLE chunks_fts USING fts5(
   context, text, content='chunks', content_rowid='id', tokenize='porter unicode61'
@@ -83,7 +86,12 @@ export function openDb(path: string, opts: { readonly?: boolean } = {}): DB {
     db.exec(SCHEMA);
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
   } else if (version !== SCHEMA_VERSION) {
-    throw new Error(`Index schema v${version} != v${SCHEMA_VERSION}; delete ${path} and re-run ingest.`);
+    throw new Error(`Index schema v${version} != v${SCHEMA_VERSION}; run \`spec-brain ingest --rebuild\`.`);
   }
   return db;
+}
+
+/** The index is derived data: rebuilding means deleting the file and re-ingesting. */
+export function deleteDb(path: string) {
+  for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
 }

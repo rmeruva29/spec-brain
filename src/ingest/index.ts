@@ -1,8 +1,9 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import type { Config, SddRepoConfig } from "../config.ts";
+import type { Config, SddRepoConfig, SourceConfig } from "../config.ts";
 import type { DB } from "../db.ts";
 import { findAcIds, findRequirementIds, testId } from "../ids.ts";
+import { parseConfluenceFile } from "./confluence.ts";
 import { parseSddFile, sha256, type ParsedDoc } from "./sdd.ts";
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".turbo", "coverage", "out", ".gradle", "target"]);
@@ -38,7 +39,10 @@ function* walk(root: string, dir: string, accept: (rel: string) => boolean): Gen
   }
 }
 
-function listMarkdown(source: SddRepoConfig): string[] {
+function listMarkdown(source: SourceConfig): string[] {
+  if (source.kind === "confluence-export") {
+    return [...walk(source.root, source.root, (r) => /^\d+\.md$/.test(r))];
+  }
   const files = new Set<string>();
   for (const inc of source.include) {
     const full = join(source.root, inc);
@@ -61,14 +65,18 @@ export function storeDoc(db: DB, parsed: ParsedDoc) {
   clearOrigin(db, doc.id);
   db.prepare("DELETE FROM documents WHERE id = ?").run(doc.id);
   db.prepare(
-    `INSERT INTO documents (id, source, project, path, title, doc_type, domain, capability, status, content_hash)
-     VALUES (@id, @source, @project, @path, @title, @docType, @domain, @capability, @status, @contentHash)`,
+    `INSERT INTO documents (id, source, project, path, url, title, doc_type, domain, capability, status, content_hash)
+     VALUES (@id, @source, @project, @path, @url, @title, @docType, @domain, @capability, @status, @contentHash)`,
   ).run(doc);
   const insertChunk = db.prepare(
-    `INSERT INTO chunks (doc_id, ord, section, anchor, entity_id, context, text, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO chunks (doc_id, ord, section, section_kind, anchor, entity_id, context, text, content_hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const chunkIds = parsed.chunks.map((c, i) =>
-    Number(insertChunk.run(doc.id, i, c.section, c.anchor, c.entityId, c.context, c.text, sha256(`${c.context}\n${c.text}`)).lastInsertRowid),
+    Number(
+      insertChunk.run(doc.id, i, c.section, c.sectionKind, c.anchor, c.entityId, c.context, c.text, sha256(`${c.context}\n${c.text}`))
+        .lastInsertRowid,
+    ),
   );
   // An id defined in two documents keeps the first definition; the duplicate is still searchable as a chunk.
   const insertEntity = db.prepare(`INSERT OR IGNORE INTO entities (id, kind, title, status, chunk_id, origin) VALUES (?, ?, ?, ?, ?, ?)`);
@@ -120,7 +128,10 @@ function scanTests(db: DB, source: SddRepoConfig, force: boolean) {
   return { seen: seen.size, changed };
 }
 
-export function ingestSource(db: DB, source: SddRepoConfig, opts: { force?: boolean } = {}): IngestStats {
+const parse = (source: SourceConfig, rel: string, content: string): ParsedDoc =>
+  source.kind === "confluence-export" ? parseConfluenceFile(source, rel, content) : parseSddFile(source, rel, content);
+
+export function ingestSource(db: DB, source: SourceConfig, opts: { force?: boolean } = {}): IngestStats {
   const force = opts.force ?? false;
   const stats: IngestStats = { source: source.name, docsSeen: 0, docsChanged: 0, docsRemoved: 0, chunks: 0, testFilesSeen: 0, testFilesChanged: 0 };
   const known = new Map(
@@ -135,7 +146,7 @@ export function ingestSource(db: DB, source: SddRepoConfig, opts: { force?: bool
       stats.docsSeen++;
       const content = readFileSync(join(source.root, rel), "utf8");
       if (!force && known.get(rel)?.content_hash === sha256(content)) continue;
-      storeDoc(db, parseSddFile(source, rel, content));
+      storeDoc(db, parse(source, rel, content));
       stats.docsChanged++;
     }
     for (const [rel, row] of known) {
@@ -143,9 +154,11 @@ export function ingestSource(db: DB, source: SddRepoConfig, opts: { force?: bool
       removeDoc(db, row.id);
       stats.docsRemoved++;
     }
-    const t = scanTests(db, source, force);
-    stats.testFilesSeen = t.seen;
-    stats.testFilesChanged = t.changed;
+    if (source.kind === "sdd-repo") {
+      const t = scanTests(db, source, force);
+      stats.testFilesSeen = t.seen;
+      stats.testFilesChanged = t.changed;
+    }
   })();
   stats.chunks = (db.prepare("SELECT count(*) n FROM chunks c JOIN documents d ON d.id = c.doc_id WHERE d.source = ?").get(source.name) as { n: number }).n;
   return stats;

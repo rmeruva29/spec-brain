@@ -20,7 +20,8 @@ server.registerTool(
   {
     title: "Search specs",
     description:
-      "Search the indexed specifications, plans, decisions, architecture docs, agent and skill definitions. " +
+      "Search the indexed specifications, plans, decisions, architecture approach documents (wiki), standards/guardrails, " +
+        "agent and skill definitions. " +
       "Requirement and acceptance-criteria ids in the query (e.g. WDG-CCH-001, AC-WDG-CCH-003) are resolved exactly first. " +
       "Every result starts with a citation (path#anchor) and the document status; cite those when you use a result, " +
       "and say so when nothing relevant comes back rather than guessing.",
@@ -30,14 +31,24 @@ server.registerTool(
       doc_types: z
         .array(z.string())
         .optional()
-        .describe("Restrict to document types: spec, plan, decision, spec-note, domain-readme, arch-doc, epic-report, plan-doc, runbook, dev-guide, agent, skill, convention"),
+        .describe(
+          "Restrict to document types. Repo: spec, plan, decision, spec-note, domain-readme, arch-doc, epic-report, plan-doc, runbook, dev-guide, agent, skill, convention. Wiki: aad, standard, assessment, strategy, diagram, wiki",
+        ),
       domain: z.string().optional().describe("Restrict to one spec domain, e.g. widgets"),
+      section_kinds: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Restrict to section kinds: overview, requirements, nfr, assumptions, decision, design, data, logging, monitoring, security, errors, testing, deployment, compliance, impact, approval, out-of-scope, references",
+        ),
       include_archived: z.boolean().optional().describe("Include archived docs and withdrawn requirements"),
     },
     annotations: readOnly,
   },
-  async ({ query, k, doc_types, domain, include_archived }) =>
-    text(formatHits(search(db, query, { k, filters: { docTypes: doc_types, domain, includeArchived: include_archived } }))),
+  async ({ query, k, doc_types, domain, section_kinds, include_archived }) =>
+    text(
+      formatHits(search(db, query, { k, filters: { docTypes: doc_types, domain, sectionKinds: section_kinds, includeArchived: include_archived } })),
+    ),
 );
 
 server.registerTool(

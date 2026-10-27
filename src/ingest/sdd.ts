@@ -15,13 +15,15 @@ import {
   taskId,
   type EntityKind,
 } from "../ids.ts";
-import { extractTables, parseMarkdown, splitByParagraph, type Section, type Table } from "./markdown.ts";
+import { chunkSections, extractTables, parseMarkdown, splitByParagraph, type Table } from "./markdown.ts";
+import { sectionKind } from "./sections.ts";
 
 /** About 800 tokens. Larger sections are split by sub-heading, then by paragraph. */
 const MAX_CHUNK_CHARS = 3200;
 
 export interface ChunkRec {
   section: string | null;
+  sectionKind: string | null;
   anchor: string | null;
   entityId: string | null;
   context: string;
@@ -48,6 +50,7 @@ export interface DocRec {
   source: string;
   project: string;
   path: string;
+  url: string | null;
   title: string;
   docType: string;
   domain: string | null;
@@ -162,7 +165,7 @@ export function parseSddFile(source: SddRepoConfig, rel: string, content: string
       .join(" · ");
 
   const addChunk = (section: string | null, anchor: string | null, text: string, entityId: string | null = null) => {
-    chunks.push({ section, anchor, entityId, context: context(section), text });
+    chunks.push({ section, sectionKind: sectionKind(section), anchor, entityId, context: context(section), text });
     return chunks.length - 1;
   };
 
@@ -217,34 +220,16 @@ export function parseSddFile(source: SddRepoConfig, rel: string, content: string
 
   if (md.preamble) for (const piece of splitByParagraph(md.preamble, MAX_CHUNK_CHARS)) addChunk(null, null, piece);
 
-  // Group each h2 with its nested h3+ sections; emit the group as one chunk when it fits.
-  const groups: Section[][] = [];
-  for (const s of md.sections) {
-    if (s.level === 2 || groups.length === 0) groups.push([s]);
-    else groups[groups.length - 1]!.push(s);
-  }
-  for (const group of groups) {
-    const h2 = group[0]!;
-    const parts: { section: Section; text: string }[] = [];
-    for (const s of group) {
-      const name = s === h2 ? s.heading : `${h2.heading} › ${s.heading}`;
-      let text = s.body;
-      for (const t of extractTables(s.body).tables) if (consumeEntityTable(t, name, s.anchor)) text = text.replace(t.raw, "");
-      text = text.trim();
-      if (text || s !== h2) parts.push({ section: s, text: s === h2 ? text : `${"#".repeat(s.level)} ${s.heading}\n${text}` });
-    }
-    const joined = parts.map((p) => p.text).filter(Boolean).join("\n\n");
-    if (!joined) continue;
-    if (joined.length <= MAX_CHUNK_CHARS) {
-      addChunk(h2.heading, h2.anchor, joined);
-      continue;
-    }
-    for (const p of parts) {
-      if (!p.text) continue;
-      const name = p.section === h2 ? h2.heading : `${h2.heading} › ${p.section.heading}`;
-      for (const piece of splitByParagraph(p.text, MAX_CHUNK_CHARS)) addChunk(name, p.section.anchor, piece);
-    }
-  }
+  chunkSections(
+    md.sections,
+    MAX_CHUNK_CHARS,
+    (sec, name) => {
+      let text = sec.body;
+      for (const t of extractTables(sec.body).tables) if (consumeEntityTable(t, name, sec.anchor)) text = text.replace(t.raw, "");
+      return text;
+    },
+    (name, anchor, text) => addChunk(name, anchor, text),
+  );
 
   // Free-text references: from the defining entity when the chunk defines one, else from the document.
   for (const c of chunks) {
@@ -264,7 +249,7 @@ export function parseSddFile(source: SddRepoConfig, rel: string, content: string
   const dedupedEdges = [...new Map(edges.map((e) => [`${e.src}|${e.dst}|${e.kind}`, e])).values()];
   const dedupedEntities = [...new Map(entities.map((e) => [e.id, e])).values()];
   return {
-    doc: { id, source: source.name, project: source.project, path: rel, title, docType, domain, capability, status, contentHash: sha256(content) },
+    doc: { id, source: source.name, project: source.project, path: rel, url: null, title, docType, domain, capability, status, contentHash: sha256(content) },
     chunks,
     entities: dedupedEntities,
     edges: dedupedEdges,

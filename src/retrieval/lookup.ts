@@ -3,6 +3,7 @@ import { inferKind, type EntityKind } from "../ids.ts";
 
 export interface Citation {
   path: string;
+  url: string | null;
   anchor: string | null;
   docType: string;
   status: string | null;
@@ -32,6 +33,7 @@ interface EntityRow {
   status: string | null;
   text: string | null;
   path: string | null;
+  url: string | null;
   anchor: string | null;
   doc_type: string | null;
   doc_status: string | null;
@@ -52,7 +54,7 @@ export function getEntity(db: DB, rawId: string): EntityView | null {
   const row = db
     .prepare(
       `SELECT e.id, e.kind, e.title, e.status, e.origin, c.text, c.anchor,
-              d.path, d.doc_type, d.status AS doc_status
+              d.path, d.url, d.doc_type, d.status AS doc_status
          FROM entities e
          LEFT JOIN chunks c ON c.id = e.chunk_id
          LEFT JOIN documents d ON d.id = COALESCE(c.doc_id, e.origin)
@@ -69,7 +71,7 @@ export function getEntity(db: DB, rawId: string): EntityView | null {
     title: row.title,
     status: row.status,
     text: row.text,
-    citation: row.path ? { path: row.path, anchor: row.anchor, docType: row.doc_type!, status: row.doc_status } : null,
+    citation: row.path ? { path: row.path, url: row.url, anchor: row.anchor, docType: row.doc_type!, status: row.doc_status } : null,
   };
 }
 

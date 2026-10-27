@@ -40,7 +40,7 @@ function parseFrontmatter(md: string): { frontmatter: Record<string, string>; re
   return { frontmatter, rest: md.slice(m[0].length) };
 }
 
-/** Splits markdown into a flat list of level ≥ 2 sections; the first h1 becomes the title. Headings inside code fences are ignored. */
+/** Splits markdown into a flat list of sections; the first h1 becomes the title. Headings inside code fences are ignored. */
 export function parseMarkdown(md: string): ParsedMarkdown {
   const { frontmatter, rest } = parseFrontmatter(md);
   let title: string | null = null;
@@ -61,18 +61,19 @@ export function parseMarkdown(md: string): ParsedMarkdown {
     const h = fence === null && !fenceMatch ? /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line) : null;
     if (h) {
       const level = h[1]!.length;
-      if (level === 1 && title === null && sections.length === 0 && current === null) {
+      // A leading h1 is the document title unless frontmatter already names it (wiki exports use h1 for sections).
+      if (level === 1 && title === null && !frontmatter.title && sections.length === 0 && current === null) {
         title = h[2]!;
         continue;
       }
       flush();
-      current = { level: Math.max(level, 2), heading: h[2]!, lines: [] };
+      current = { level, heading: h[2]!, lines: [] };
       continue;
     }
     (current ? current.lines : preamble).push(line);
   }
   flush();
-  return { frontmatter, title: title ?? frontmatter.name ?? null, preamble: preamble.join("\n").trim(), sections };
+  return { frontmatter, title: title ?? frontmatter.title ?? frontmatter.name ?? null, preamble: preamble.join("\n").trim(), sections };
 }
 
 function splitRow(line: string): string[] {
@@ -117,4 +118,58 @@ export function splitByParagraph(text: string, max: number): string[] {
   }
   if (buf) out.push(buf);
   return out;
+}
+
+/**
+ * Emits sections as chunks named by their heading path ("Security › Threat Model › Model").
+ * Each section at `groupDepth` levels below the chapter level (0 = chapters) starts a group that is
+ * emitted together with its sub-sections when the whole group fits in `max` characters; otherwise
+ * each section is emitted on its own, split by paragraph. `bodyOf` lets callers strip content they
+ * turned into chunks of their own (e.g. requirement tables).
+ */
+export function chunkSections(
+  sections: Section[],
+  max: number,
+  bodyOf: (s: Section, name: string) => string,
+  emit: (name: string, anchor: string, text: string, section: Section) => void,
+  opts: { groupDepth?: number } = {},
+) {
+  if (!sections.length) return;
+  // Documents mix levels (wiki pages often put two front-matter tables at h1 and every chapter at h2).
+  // The chapter level is the shallowest level used by at least three headings; shallower headings are
+  // treated as chapters too, so a stray h1 does not become the parent of everything after it.
+  const counts = new Map<number, number>();
+  for (const s of sections) counts.set(s.level, (counts.get(s.level) ?? 0) + 1);
+  const levels = [...counts.keys()].sort((a, b) => a - b);
+  const top = levels.find((l) => counts.get(l)! >= 3) ?? levels[0]!;
+  const level = (s: Section) => Math.max(s.level, top);
+  const stack: Section[] = [];
+  const named = sections.map((section) => {
+    while (stack.length && level(stack[stack.length - 1]!) >= level(section)) stack.pop();
+    stack.push(section);
+    return { section, name: stack.map((x) => x.heading).join(" › ") };
+  });
+  const groups: (typeof named)[] = [];
+  for (const n of named) {
+    if (level(n.section) <= top + (opts.groupDepth ?? 0) || groups.length === 0) groups.push([n]);
+    else groups[groups.length - 1]!.push(n);
+  }
+  for (const group of groups) {
+    const head = group[0]!;
+    const parts = group.map(({ section, name }) => {
+      const body = bodyOf(section, name).trim();
+      const text = section === head.section ? body : `${"#".repeat(section.level)} ${section.heading}\n${body}`;
+      return { section, name, text, empty: !body };
+    });
+    if (parts.every((p) => p.empty)) continue;
+    const joined = parts.filter((p) => !p.empty).map((p) => p.text).join("\n\n");
+    if (joined.length <= max) {
+      emit(head.name, head.section.anchor, joined, head.section);
+      continue;
+    }
+    for (const p of parts) {
+      if (p.empty) continue;
+      for (const piece of splitByParagraph(p.text, max)) emit(p.name, p.section.anchor, piece, p.section);
+    }
+  }
 }
