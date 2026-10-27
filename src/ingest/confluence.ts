@@ -1,11 +1,13 @@
 import type { ConfluenceExportConfig } from "../config.ts";
 import { docId, findAllRefs, jiraRegex } from "../ids.ts";
-import { chunkSections, extractTables, parseMarkdown, splitByParagraph } from "./markdown.ts";
+import { capCodeBlocks, chunkSections, extractTables, parseMarkdown, splitByParagraph } from "./markdown.ts";
 import type { ChunkRec, EdgeRec, ParsedDoc } from "./sdd.ts";
 import { sha256 } from "./sdd.ts";
 import { sectionKind } from "./sections.ts";
 
 const MAX_CHUNK_CHARS = 3200;
+/** Payload samples and schemas keep their first part (field names) and lose the rest. */
+const MAX_CODE_CHARS = 1500;
 
 /** Confluence heading anchors keep case and join words with "-". */
 export function confluenceAnchor(heading: string): string {
@@ -57,9 +59,45 @@ function meaningful(text: string): boolean {
 
 const PAGE_LINK_RE = /(?:\/pages\/|pageId=)(\d+)/g;
 
+/**
+ * Removes what the markdown export inlines but nobody searches for: base64 images and fonts, embedded
+ * CSS, and (escaped) HTML tags around figures and code. Images become "[image]" and inline SVG diagrams
+ * keep only their text labels, so the text still reads naturally.
+ */
+export function cleanWikiMarkdown(md: string): string {
+  return md
+    .replace(/data:[a-z]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, "")
+    .replace(/\\?<svg\b[\s\S]*?\\?<\/svg\\?>/gi, (svg) => {
+      const labels = [...svg.matchAll(/\\?>([^<>\\]+)\\?<\/(?:text|tspan)\b/gi)].map((m) => m[1]!.trim()).filter(Boolean);
+      return labels.length ? `[diagram: ${[...new Set(labels)].join(" · ")}]` : "[diagram]";
+    })
+    .replace(/@font-face\s*\{[^}]*\}/gi, "")
+    .replace(/\\?<style[\s\S]*?\\?<\/style\\?>/gi, "")
+    .replace(/^[^\n|]*\{[^{}\n]*:[^{}\n]*\}[^\n|]*$/gm, (line) => (/^\s*[@.#a-z0-9_:,\s*>-]+\{/i.test(line) ? "" : line))
+    .replace(/\\?<img\b[^>]*?\\?>/gi, "[image]")
+    // HTML pasted into a page arrives escaped ("\<h2 id=…\>"); keep its structure as markdown.
+    .replace(/\\<h([1-6])\b[^>]*?\\>([\s\S]*?)\\<\/h\1\\>/gi, (_m, n: string, text: string) => {
+      const heading = text.replace(/\\?<[^>]*?\\?>/g, "").replace(/\s+/g, " ").trim();
+      return `\n\n${"#".repeat(Number(n))} ${heading}\n\n`;
+    })
+    .replace(/\\<tr\b[^>]*?\\>/gi, "\n")
+    .replace(/\\<t[dh]\b[^>]*?\\>/gi, "| ")
+    .replace(/\\<\/t[dh]\\>/gi, " ")
+    .replace(/\\<\/tr\\>/gi, "|")
+    .replace(/\\<li\b[^>]*?\\>/gi, "\n- ")
+    .replace(/\\<\/?(p|ul|ol|table|thead|tbody|br)\b[^>]*?\\?>/gi, "\n\n")
+    .replace(/\\<\/?[a-z][a-z0-9-]*\b[^>]*?\\?>/gi, "")
+    .replace(/<\/?(figure|figcaption|div|span|p|br|svg|path|g|picture|source|pre|code)\b[^>]*?>/gi, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
 /** Turns one synced Confluence page (`<pageId>.md` with frontmatter) into chunks and graph edges. */
 export function parseConfluenceFile(source: ConfluenceExportConfig, rel: string, content: string): ParsedDoc {
-  const md = parseMarkdown(content);
+  const md = parseMarkdown(capCodeBlocks(cleanWikiMarkdown(content), MAX_CODE_CHARS));
   const fm = md.frontmatter;
   const title = fm.title ?? rel;
   const ancestors = (fm.ancestors ?? "").split(" › ").filter(Boolean);

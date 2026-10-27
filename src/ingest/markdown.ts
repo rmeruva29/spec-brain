@@ -104,20 +104,50 @@ export function extractTables(body: string): { tables: Table[]; prose: string } 
   return { tables, prose: prose.join("\n").trim() };
 }
 
-/** Splits text on blank lines into pieces no longer than `max` characters (a single oversize paragraph stays whole). */
+/** Splits one oversize block by lines; a table's header and separator rows are repeated in every piece. */
+function splitByLine(block: string, max: number): string[] {
+  const lines = block.split("\n");
+  const isTable = lines[0]?.trim().startsWith("|") && /^\s*\|?\s*:?-{3,}/.test(lines[1] ?? "");
+  const header = isTable ? lines.slice(0, 2).join("\n") : "";
+  const out: string[] = [];
+  let buf = "";
+  for (const line of isTable ? lines.slice(2) : lines) {
+    if (buf && buf.length + line.length + 1 > max) {
+      out.push(buf);
+      buf = "";
+    }
+    buf = buf ? `${buf}\n${line}` : header ? `${header}\n${line}` : line;
+  }
+  if (buf) out.push(buf);
+  return out.map((piece) => (piece.length > max ? piece.slice(0, max) : piece));
+}
+
+/** Splits text on blank lines into pieces no longer than `max` characters; oversize blocks are split by line. */
 export function splitByParagraph(text: string, max: number): string[] {
   if (text.length <= max) return [text];
   const out: string[] = [];
   let buf = "";
-  for (const para of text.split(/\n{2,}/)) {
-    if (buf && buf.length + para.length + 2 > max) {
-      out.push(buf);
-      buf = "";
+  for (const block of text.split(/\n{2,}/)) {
+    const paras = block.length > max ? splitByLine(block, max) : [block];
+    for (const para of paras) {
+      if (buf && buf.length + para.length + 2 > max) {
+        out.push(buf);
+        buf = "";
+      }
+      buf = buf ? `${buf}\n\n${para}` : para;
     }
-    buf = buf ? `${buf}\n\n${para}` : para;
   }
   if (buf) out.push(buf);
   return out;
+}
+
+/** Shortens fenced code blocks longer than `max` characters, noting how much was left out. */
+export function capCodeBlocks(md: string, max: number): string {
+  return md.replace(/(^|\n)(```|~~~)([^\n]*)\n([\s\S]*?)\n\2(?=\n|$)/g, (whole, lead: string, fence: string, lang: string, code: string) => {
+    if (code.length <= max) return whole;
+    const kept = code.slice(0, code.lastIndexOf("\n", max) > 0 ? code.lastIndexOf("\n", max) : max);
+    return `${lead}${fence}${lang}\n${kept}\n… [${code.length - kept.length} more characters of ${lang.trim() || "code"} omitted]\n${fence}`;
+  });
 }
 
 /**

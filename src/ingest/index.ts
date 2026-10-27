@@ -6,6 +6,13 @@ import { findAcIds, findRequirementIds, testId } from "../ids.ts";
 import { parseConfluenceFile } from "./confluence.ts";
 import { parseSddFile, sha256, type ParsedDoc } from "./sdd.ts";
 
+/**
+ * Part of every document's change hash: bump it whenever parsing or chunking changes, so the next
+ * ingest re-processes files whose content did not change.
+ */
+export const INGEST_VERSION = "5";
+const docHash = (content: string) => sha256(`${INGEST_VERSION}\n${content}`);
+
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".turbo", "coverage", "out", ".gradle", "target"]);
 const TEST_FILE_RE = /(\.(test|spec)\.[cm]?[jt]sx?|(Test|Tests|IT)\.(java|kt))$/;
 
@@ -145,8 +152,10 @@ export function ingestSource(db: DB, source: SourceConfig, opts: { force?: boole
       seen.add(rel);
       stats.docsSeen++;
       const content = readFileSync(join(source.root, rel), "utf8");
-      if (!force && known.get(rel)?.content_hash === sha256(content)) continue;
-      storeDoc(db, parse(source, rel, content));
+      const hash = docHash(content);
+      if (!force && known.get(rel)?.content_hash === hash) continue;
+      const parsed = parse(source, rel, content);
+      storeDoc(db, { ...parsed, doc: { ...parsed.doc, contentHash: hash } });
       stats.docsChanged++;
     }
     for (const [rel, row] of known) {

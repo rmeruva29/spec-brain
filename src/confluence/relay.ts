@@ -30,9 +30,13 @@ const blockText = (content: unknown): string =>
       ? content.map((b: { text?: string }) => b.text ?? "").join("\n")
       : "";
 
-/** Results too large for the context window are saved to a file by Claude Code; read them back from there. */
+/**
+ * Results too large for the context window are saved to a file by Claude Code and replaced by a notice
+ * ("Output has been saved to /x.txt." or "<persisted-output> … Full output saved to: /x.json" plus a
+ * truncated preview); read the full result back from that file.
+ */
 function resolveSaved(output: string): string {
-  const m = /saved to (\/\S+?\.(?:txt|json))\b/.exec(output);
+  const m = /saved to:?\s+(\/\S+?\.(?:txt|json))\b/.exec(output);
   if (!m) return output;
   const saved = readFileSync(m[1]!, "utf8");
   try {
@@ -88,13 +92,21 @@ export function extractJson<T = Record<string, unknown>>(text: string): T | null
   return null;
 }
 
+/**
+ * `--allowedTools` is variadic, so its list is bound with `=` and the prompt goes on stdin; a trailing
+ * prompt argument would otherwise be swallowed as another tool name.
+ */
+export function relayArgs(allowedTools: string[], model = "haiku"): string[] {
+  return ["-p", "--model", model, "--output-format", "stream-json", "--verbose", `--allowedTools=${allowedTools.join(",")}`];
+}
+
 export async function runRelay(prompt: string, allowedTools: string[], opts: { model?: string; timeoutMs?: number } = {}): Promise<RelayResult> {
   if (process.env.CLAUDECODE) {
     throw new Error("sync-confluence starts a headless Claude Code session; run it from a normal terminal, not from inside Claude Code.");
   }
-  const args = ["-p", "--model", opts.model ?? "haiku", "--output-format", "stream-json", "--verbose", "--allowedTools", allowedTools.join(","), prompt];
   return new Promise((resolve, reject) => {
-    const child = spawn("claude", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("claude", relayArgs(allowedTools, opts.model), { stdio: ["pipe", "pipe", "pipe"] });
+    child.stdin.end(prompt);
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? 15 * 60_000);

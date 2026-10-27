@@ -3,11 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ConfluenceExportConfig } from "../src/config.ts";
-import { extractJson, parseStream } from "../src/confluence/relay.ts";
+import { extractJson, parseStream, relayArgs } from "../src/confluence/relay.ts";
 import { planSync, renderPage, type ListedPage } from "../src/confluence/sync.ts";
 import { openDb, type DB } from "../src/db.ts";
-import { classifyPage, pageStatus } from "../src/ingest/confluence.ts";
+import { classifyPage, cleanWikiMarkdown, pageStatus } from "../src/ingest/confluence.ts";
 import { ingestSource } from "../src/ingest/index.ts";
+import { capCodeBlocks, splitByParagraph } from "../src/ingest/markdown.ts";
 import { neighbors } from "../src/retrieval/lookup.ts";
 import { search } from "../src/retrieval/search.ts";
 
@@ -23,6 +24,12 @@ const source: ConfluenceExportConfig = {
 };
 
 describe("relay stream parsing", () => {
+  it("binds the variadic --allowedTools list so the stdin prompt is not taken as a tool name", () => {
+    const args = relayArgs(["mcp__atlassian__getConfluencePage", "mcp__atlassian__getConfluencePageDescendants"]);
+    expect(args).toContain("--allowedTools=mcp__atlassian__getConfluencePage,mcp__atlassian__getConfluencePageDescendants");
+    expect(args.at(-1)).toMatch(/^--allowedTools=/);
+  });
+
   const line = (o: unknown) => JSON.stringify(o);
   const toolUse = (id: string, pageId: string) =>
     line({ type: "assistant", message: { content: [{ type: "tool_use", id, name: "mcp__atlassian__getConfluencePage", input: { pageId } }] } });
@@ -45,6 +52,13 @@ describe("relay stream parsing", () => {
     writeFileSync(saved, JSON.stringify([{ type: "text", text: "[IMPORTANT: notice]" }, { type: "text", text: '{"id":"9","body":"big"}' }]));
     const r = parseStream([toolUse("t1", "9"), toolResult("t1", `Error: result (99 characters) exceeds maximum allowed tokens. Output has been saved to ${saved}.`)]);
     expect(extractJson(r.calls[0]!.output!)).toEqual({ id: "9", body: "big" });
+
+    // Newer Claude Code: a <persisted-output> notice with a truncated preview that must not be parsed.
+    const persisted = join(dir, "toolu_x.json");
+    writeFileSync(persisted, JSON.stringify([{ type: "text", text: "[notice]" }, { type: "text", text: '{"id":"10","body":"full"}' }]));
+    const notice = `<persisted-output>\nOutput too large (115.8KB). Full output saved to: ${persisted}\n\nPreview (first 2KB):\n[\n  {"id":"10","bo`;
+    const r2 = parseStream([toolUse("t2", "10"), toolResult("t2", notice)]);
+    expect(extractJson(r2.calls[0]!.output!)).toEqual({ id: "10", body: "full" });
     rmSync(dir, { recursive: true, force: true });
   });
 });
@@ -90,6 +104,37 @@ describe("page classification", () => {
     expect(pageStatus("Scoping", ["Team", "Pending Review"], null)).toBe("in review");
     // The template's header lozenge text "NOT APPROVEDCONDITIONALAPPROVED" is not a status.
     expect(pageStatus("X", [], "| Dept | Status |\n|---|---|\n| EA | NOT APPROVEDCONDITIONALAPPROVED |")).toBe("unapproved");
+  });
+});
+
+describe("wiki cleaning", () => {
+  it("drops embedded binaries, CSS and markup but keeps diagram labels and code text", () => {
+    const md = [
+      'Intro \\<figure\\>\\<img src="data:image/png;base64,iVBORw0KGgo+/=" alt="x"\\>\\</figure\\> after',
+      "@font-face{font-family:Inter;src:url(data:font/woff2;base64,d09GMg==)}",
+      '\\<svg width="10"\\>\\<rect/\\>\\<text x="1"\\>Build\\</text\\>\\<text x="2"\\>Deploy\\</text\\>\\</svg\\>',
+      "\\<pre\\>\\<code\\>&lt;artifact&gt;-&lt;MAJOR&gt;\\</code\\>\\</pre\\>",
+      "| a | b |",
+    ].join("\n");
+    expect(cleanWikiMarkdown(md)).toBe("Intro [image] after\n\n[diagram: Build · Deploy]\n<artifact>-<MAJOR>\n| a | b |");
+  });
+});
+
+describe("oversize content", () => {
+  it("caps long code blocks and splits long tables by line, repeating the header", () => {
+    const json = Array.from({ length: 200 }, (_, i) => `  "field_${i}": "string",`).join("\n");
+    const capped = capCodeBlocks(`Payload:\n\n\`\`\`json\n${json}\n\`\`\`\n\nAfter.`, 300);
+    expect(capped).toContain('"field_0"');
+    expect(capped).not.toContain('"field_199"');
+    expect(capped).toMatch(/more characters of json omitted\]\n```\n\nAfter\.$/);
+
+    const table = ["| Service | Status |", "|---|---|", ...Array.from({ length: 60 }, (_, i) => `| service-${i} | migrated |`)].join("\n");
+    const pieces = splitByParagraph(table, 400);
+    expect(pieces.length).toBeGreaterThan(1);
+    for (const p of pieces) {
+      expect(p.length).toBeLessThanOrEqual(400);
+      expect(p.startsWith("| Service | Status |\n|---|---|\n")).toBe(true);
+    }
   });
 });
 

@@ -167,7 +167,9 @@ export async function syncConfluence(source: ConfluenceExportConfig, opts: SyncO
 
   log(`Listing pages under ${source.rootPageId} …`);
   const listing = await listDescendants(source, model);
-  const rootTitle = manifest.pages[source.rootPageId]?.title ?? source.project;
+  // Until the root page itself has been fetched once, its title is a placeholder; the root is first in
+  // the fetch order, so every page written after it gets the real title in its ancestors.
+  let rootTitle = manifest.pages[source.rootPageId]?.title ?? source.project;
   const plan = planSync({ id: source.rootPageId, title: rootTitle }, listing, manifest, source.excludeTitles, opts.force);
   const toFetch = opts.limit ? plan.toFetch.slice(0, opts.limit) : plan.toFetch;
   log(`${listing.length} listed, ${plan.wanted.size} wanted, ${plan.excluded} excluded, ${plan.toFetch.length} new or changed, ${plan.toDelete.length} to delete`);
@@ -195,7 +197,9 @@ export async function syncConfluence(source: ConfluenceExportConfig, opts: SyncO
             continue;
           }
           const w = plan.wanted.get(id)!;
-          writeFileSync(join(dir, `${id}.md`), renderPage(source, page, w));
+          if (id === source.rootPageId) rootTitle = page.title;
+          const ancestors = w.ancestors.length ? [rootTitle, ...w.ancestors.slice(1)] : [];
+          writeFileSync(join(dir, `${id}.md`), renderPage(source, page, { ...w, ancestors }));
           manifest.pages[id] = { title: page.title, lastModified: w.lastModified || page.version?.createdAt || "", version: page.version?.number ?? null };
           fetched++;
         }
