@@ -92,6 +92,13 @@ export function classify(rel: string): { docType: string; domain: string | null;
   return { docType: "doc", domain: null, capability: null };
 }
 
+/** A row whose text opens "Superseded by X." or "Withdrawn (date):" keeps its id but no longer applies. */
+function rowStatus(summary: string, docStatus: string | null): string | null {
+  if (/^\s*superseded\b/i.test(summary)) return "superseded";
+  if (/^\s*withdrawn\b/i.test(summary)) return "withdrawn";
+  return docStatus;
+}
+
 /** First word(s) of a status line: "Implemented — Epic PROJ-1 delivered" → "implemented". */
 export function normalizeStatus(line: string | undefined): string | null {
   if (!line) return null;
@@ -208,7 +215,7 @@ export function parseSddFile(source: SddRepoConfig, rel: string, content: string
       if (!isId(kind === "ac" ? AC_RE : REQ_RE, eid)) continue;
       const ci = addChunk(sectionName, anchor, rowText(eid, t, row), eid);
       const summary = row[row.length - 1] ?? "";
-      entities.push({ id: eid, kind, title: summary.slice(0, 160), status, chunkIndex: ci });
+      entities.push({ id: eid, kind, title: summary.slice(0, 160), status: rowStatus(summary, status), chunkIndex: ci });
       if (cap) edge(eid, cap, "part_of");
       if (kind === "ac") {
         const vi = t.header.findIndex((h) => /verif/i.test(h));

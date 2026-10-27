@@ -16,8 +16,14 @@ export interface Manifest {
   pages: Record<string, { title: string; lastModified: string; version: number | null }>;
 }
 
+export interface SyncRoot {
+  id: string;
+  title: string;
+  listing: ListedPage[];
+}
+
 export interface SyncPlan {
-  wanted: Map<string, { title: string; ancestors: string[]; lastModified: string; parentId: string | null }>;
+  wanted: Map<string, { root: string; title: string; ancestors: string[]; lastModified: string; parentId: string | null }>;
   toFetch: string[];
   toDelete: string[];
   excluded: number;
@@ -36,40 +42,45 @@ const MCP_SERVER = "atlassian";
 const tool = (name: string) => `mcp__${MCP_SERVER}__${name}`;
 
 /**
- * Decides what to fetch: every page under the root (plus the root) that is not excluded by title,
- * whose lastModified differs from the manifest. Pages that left the tree are deleted.
+ * Decides what to fetch: every root and every page under it that is not excluded by title, whose
+ * lastModified differs from the manifest. Pages that left all the trees are deleted.
  */
-export function planSync(root: { id: string; title: string }, listing: ListedPage[], manifest: Manifest, excludeTitles: string[], force = false): SyncPlan {
+export function planSync(roots: SyncRoot[], manifest: Manifest, excludeTitles: string[], force = false): SyncPlan {
   const exclude = excludeTitles.map((p) => new RegExp(p, "i"));
-  const byId = new Map(listing.map((p) => [p.id, p]));
-  const ancestorsOf = (p: ListedPage): string[] => {
-    const out: string[] = [];
-    for (let parent = p.parentId, guard = 0; parent && guard < 20; guard++) {
-      if (parent === root.id) {
-        out.unshift(root.title);
-        break;
-      }
-      const node = byId.get(parent);
-      if (!node) break;
-      out.unshift(node.title);
-      parent = node.parentId;
-    }
-    return out;
-  };
-
-  const wanted: SyncPlan["wanted"] = new Map([[root.id, { title: root.title, ancestors: [], lastModified: manifest.pages[root.id]?.lastModified ?? "", parentId: null }]]);
+  const rootIds = new Set(roots.map((r) => r.id));
+  // Roots come first so their real titles are known before any page beneath them is written.
+  const wanted: SyncPlan["wanted"] = new Map(
+    roots.map((r) => [r.id, { root: r.id, title: r.title, ancestors: [], lastModified: manifest.pages[r.id]?.lastModified ?? "", parentId: null }]),
+  );
   let excluded = 0;
-  for (const p of listing) {
-    if (p.type !== "page") continue;
-    const ancestors = ancestorsOf(p);
-    if ([p.title, ...ancestors].some((t) => exclude.some((re) => re.test(t)))) {
-      excluded++;
-      continue;
+  for (const root of roots) {
+    const byId = new Map(root.listing.map((p) => [p.id, p]));
+    const ancestorsOf = (p: ListedPage): string[] => {
+      const out: string[] = [];
+      for (let parent = p.parentId, guard = 0; parent && guard < 20; guard++) {
+        if (parent === root.id) {
+          out.unshift(root.title);
+          break;
+        }
+        const node = byId.get(parent);
+        if (!node) break;
+        out.unshift(node.title);
+        parent = node.parentId;
+      }
+      return out;
+    };
+    for (const p of root.listing) {
+      if (p.type !== "page" || wanted.has(p.id)) continue;
+      const ancestors = ancestorsOf(p);
+      if ([p.title, ...ancestors].some((t) => exclude.some((re) => re.test(t)))) {
+        excluded++;
+        continue;
+      }
+      wanted.set(p.id, { root: root.id, title: p.title, ancestors, lastModified: p.lastModified, parentId: p.parentId });
     }
-    wanted.set(p.id, { title: p.title, ancestors, lastModified: p.lastModified, parentId: p.parentId });
   }
   const toFetch = [...wanted.entries()]
-    .filter(([id, w]) => force || !manifest.pages[id] || manifest.pages[id]!.lastModified !== w.lastModified || (id === root.id && !w.lastModified))
+    .filter(([id, w]) => force || !manifest.pages[id] || manifest.pages[id]!.lastModified !== w.lastModified || (rootIds.has(id) && !w.lastModified))
     .map(([id]) => id);
   const toDelete = Object.keys(manifest.pages).filter((id) => !wanted.has(id));
   return { wanted, toFetch, toDelete, excluded };
@@ -103,11 +114,11 @@ function relayFailure(what: string, r: RelayResult): Error {
   return new Error(`${what} failed: ${r.error ?? "no tool result"}`);
 }
 
-async function listDescendants(source: ConfluenceExportConfig, model: string): Promise<ListedPage[]> {
+async function listDescendants(source: ConfluenceExportConfig, rootId: string, model: string): Promise<ListedPage[]> {
   const pages: ListedPage[] = [];
   let cursor: string | null = null;
   for (let round = 0; round < 20; round++) {
-    const args = `cloudId "${source.site}", pageId "${source.rootPageId}", depth 10, limit 250${cursor ? `, cursor "${cursor}"` : ""}`;
+    const args = `cloudId "${source.site}", pageId "${rootId}", depth 10, limit 250${cursor ? `, cursor "${cursor}"` : ""}`;
     const r = await runRelay(
       `You are a fetch relay for a script that reads your tool results directly. Call ${tool("getConfluencePageDescendants")} exactly once with ${args}. ` +
         "Do not summarise or repeat the result. Then reply with exactly: DONE",
@@ -165,14 +176,18 @@ export async function syncConfluence(source: ConfluenceExportConfig, opts: SyncO
   mkdirSync(dir, { recursive: true });
   const manifest = readManifest(dir);
 
-  log(`Listing pages under ${source.rootPageId} …`);
-  const listing = await listDescendants(source, model);
-  // Until the root page itself has been fetched once, its title is a placeholder; the root is first in
-  // the fetch order, so every page written after it gets the real title in its ancestors.
-  let rootTitle = manifest.pages[source.rootPageId]?.title ?? source.project;
-  const plan = planSync({ id: source.rootPageId, title: rootTitle }, listing, manifest, source.excludeTitles, opts.force);
+  // Until a root page has been fetched once, its title is a placeholder; roots are first in the fetch
+  // order, so every page written after them gets the real title in its ancestors.
+  const rootTitles = new Map(source.rootPageIds.map((id) => [id, manifest.pages[id]?.title ?? source.project]));
+  const roots: SyncRoot[] = [];
+  for (const id of source.rootPageIds) {
+    log(`Listing pages under ${id} …`);
+    roots.push({ id, title: rootTitles.get(id)!, listing: await listDescendants(source, id, model) });
+  }
+  const plan = planSync(roots, manifest, source.excludeTitles, opts.force);
   const toFetch = opts.limit ? plan.toFetch.slice(0, opts.limit) : plan.toFetch;
-  log(`${listing.length} listed, ${plan.wanted.size} wanted, ${plan.excluded} excluded, ${plan.toFetch.length} new or changed, ${plan.toDelete.length} to delete`);
+  const listed = roots.reduce((n, r) => n + r.listing.length, 0);
+  log(`${listed} listed, ${plan.wanted.size} wanted, ${plan.excluded} excluded, ${plan.toFetch.length} new or changed, ${plan.toDelete.length} to delete`);
   if (opts.dryRun) return { fetched: 0, failed: [] as string[], deleted: 0, costUsd: 0 };
 
   const batch = opts.batch ?? 8;
@@ -197,8 +212,8 @@ export async function syncConfluence(source: ConfluenceExportConfig, opts: SyncO
             continue;
           }
           const w = plan.wanted.get(id)!;
-          if (id === source.rootPageId) rootTitle = page.title;
-          const ancestors = w.ancestors.length ? [rootTitle, ...w.ancestors.slice(1)] : [];
+          if (rootTitles.has(id)) rootTitles.set(id, page.title);
+          const ancestors = w.ancestors.length ? [rootTitles.get(w.root)!, ...w.ancestors.slice(1)] : [];
           writeFileSync(join(dir, `${id}.md`), renderPage(source, page, { ...w, ancestors }));
           manifest.pages[id] = { title: page.title, lastModified: w.lastModified || page.version?.createdAt || "", version: page.version?.number ?? null };
           fetched++;

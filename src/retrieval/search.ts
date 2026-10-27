@@ -69,7 +69,12 @@ function filterSql(f: SearchFilters): { sql: string; args: unknown[] } {
     clauses.push(`c.section_kind IN (${f.sectionKinds.map(() => "?").join(",")})`);
     args.push(...f.sectionKinds);
   }
-  if (!f.includeArchived) clauses.push("d.doc_type NOT IN ('archive', 'template') AND COALESCE(d.status, '') NOT IN ('withdrawn', 'superseded')");
+  if (!f.includeArchived) {
+    clauses.push(
+      "d.doc_type NOT IN ('archive', 'template') AND COALESCE(d.status, '') NOT IN ('withdrawn', 'superseded') " +
+        "AND NOT EXISTS (SELECT 1 FROM entities en WHERE en.id = c.entity_id AND en.status IN ('withdrawn', 'superseded'))",
+    );
+  }
   return { sql: clauses.length ? `AND ${clauses.join(" AND ")}` : "", args };
 }
 

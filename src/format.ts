@@ -1,5 +1,7 @@
+import type { DriftReport } from "./retrieval/drift.ts";
 import type { Citation, EntityView, RequirementView, TraceResult } from "./retrieval/lookup.ts";
 import type { Hit, SearchResult } from "./retrieval/search.ts";
+import type { PrecedentResult, StandardsResult } from "./retrieval/standards.ts";
 
 // Plain-text renderings shared by the CLI and the MCP server. Every block leads with a citation
 // so an agent can quote where a fact came from.
@@ -22,12 +24,58 @@ export function formatHits(hits: Hit[]): string {
     .join("\n\n---\n\n");
 }
 
+const lowNote = (r: Pick<SearchResult, "confidence">) =>
+  `Low confidence (best match ${r.confidence?.toFixed(2)}): nothing in the index closely matches this question. ` +
+  "Say the indexed specs and docs do not cover it rather than answering from these results.";
+
 export function formatResult(r: SearchResult): string {
-  const note = r.lowConfidence
-    ? `Low confidence (best match ${r.confidence?.toFixed(2)}): nothing in the index closely matches this question. ` +
-      "Say the indexed specs and docs do not cover it rather than answering from these results.\n\n"
-    : "";
-  return note + formatHits(r.hits);
+  return (r.lowConfidence ? `${lowNote(r)}\n\n` : "") + formatHits(r.hits);
+}
+
+export function formatStandards(r: StandardsResult): string {
+  const out = [`Standards for "${r.topic}"${r.sectionKinds.length ? ` (design sections: ${r.sectionKinds.join(", ")})` : ""}`, "", "== Standards, guardrails and conventions =="];
+  if (r.standards.lowConfidence || !r.standards.hits.length) {
+    out.push(
+      `No standards page covers this topic${r.standards.confidence !== null ? ` (best match ${r.standards.confidence.toFixed(2)})` : ""}. ` +
+        "What follows is how past designs handled it: precedent, not an agreed standard. Say so when you use it.",
+    );
+  } else out.push(formatHits(r.standards.hits));
+  out.push("", "== How designs and specs apply it ==");
+  out.push(r.practice.lowConfidence || !r.practice.hits.length ? "Nothing in the design documents closely matches." : formatHits(r.practice.hits));
+  return out.join("\n");
+}
+
+export function formatPrecedent(r: PrecedentResult): string {
+  if (r.lowConfidence || !r.precedents.length) {
+    return `No earlier decision record addresses this${r.confidence !== null ? ` (best match ${r.confidence.toFixed(2)})` : ""}. Say no precedent was found rather than inferring one.`;
+  }
+  return r.precedents
+    .map((p, i) => {
+      const head = [`[${i + 1}] ${p.title ?? p.path}`, p.docType, p.status ? `status: ${p.status}` : "approval not recorded", p.url ?? p.path].join(" · ");
+      const sections = p.hits.map((h) => `Section: ${h.section ?? "(intro)"}${h.anchor ? ` (${cite(h)})` : ""}\n${h.text.length > 1200 ? `${h.text.slice(0, 1200)} …` : h.text}`);
+      return [head, ...sections].join("\n");
+    })
+    .join("\n\n---\n\n");
+}
+
+export function formatDrift(r: DriftReport, limit = 25): string {
+  const out: string[] = [];
+  const section = <T>(title: string, items: T[], render: (item: T) => string, empty: string) => {
+    out.push("", `== ${title} (${items.length}) ==`);
+    if (!items.length) out.push(empty);
+    out.push(...items.slice(0, limit).map(render));
+    if (items.length > limit) out.push(`… ${items.length - limit} more`);
+  };
+  const from = (titles: (string | null)[]) => titles.slice(0, 3).join("; ") + (titles.length > 3 ? ` (+${titles.length - 3})` : "");
+  const item = (i: { id: string; title: string | null; status: string | null; path: string | null }) =>
+    `- ${i.id} [${i.status}] ${i.title ?? ""}${i.path ? ` (${i.path})` : ""}`;
+  section("Ids cited but never defined", r.undefinedIds, (u) => `- ${u.id} [${u.kind}] cited in ${from(u.mentionedIn)}`, "None.");
+  section("Approved or built requirements no acceptance criterion verifies", r.unverifiedRequirements, item, "None.");
+  section("Built acceptance criteria no test cites", r.untestedCriteria, item, "None.");
+  section("Standards pages with no rules in them", r.emptyStandards, (s) => `- ${s.title ?? s.path} (${s.chars} chars) ${s.url ?? s.path}`, "None.");
+  section("Wiki pages linked from indexed pages but not in the corpus", r.missingPages, (m) => `- ${m.pageId} ${m.title ?? "(title unknown)"}: linked from ${m.linkedFrom.length} page(s): ${from(m.linkedFrom)}`, "None.");
+  out.push("", "== Document status mix ==", ...r.statusByType.map((s) => `- ${s.source} ${s.docType} · ${s.status}: ${s.docs}`));
+  return out.join("\n").trimStart();
 }
 
 const line = (e: EntityView) => `- ${e.id}${e.title ? `: ${e.title}` : ""}${e.citation ? ` (${cite(e.citation)})` : ""}`;

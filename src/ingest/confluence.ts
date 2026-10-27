@@ -22,7 +22,11 @@ export function classifyPage(title: string, ancestors: string[]): string {
   const path = ancestors.join(" › ");
   if (/template/i.test(title) || /\btemplates\b/i.test(path)) return "template";
   if (/^\s*(\[draft\]\s*)?architect(ure|ural) approach\b/i.test(title)) return "aad";
-  if (/guard ?rails?|guidelines|policies|standards?\b|sops?\b|specification|checklist|contracts/i.test(title) || /guardrails|guidelines/i.test(path)) {
+  if (/^\s*ADR\b|architecture decision record/i.test(title)) return "decision";
+  if (
+    /guard ?rails?|guidelines|guidance|polic(y|ies)|standards?\b|standardi[sz]ation|best practices|conventions|sops?\b|specification|checklist|contracts/i.test(title) ||
+    /guardrails|guidelines|standardi[sz]ation/i.test(path)
+  ) {
     return "standard";
   }
   if (/strategy/i.test(path)) return "strategy";
@@ -35,7 +39,7 @@ const clean = (cell: string) => cell.replace(/[*_`]/g, "").trim().toUpperCase();
 
 /** Status from the title ([DRAFT], (Moved)), the tree (Pending Review) and the "Document Acceptance" approval table. */
 export function pageStatus(title: string, ancestors: string[], approvalBody: string | null): string | null {
-  if (/\[draft\]|\(not ready/i.test(title)) return "draft";
+  if (/[[(]draft[\])]|\(not ready/i.test(title)) return "draft";
   if (/\(moved\)/i.test(title)) return "superseded";
   if (ancestors.some((a) => /pending review/i.test(a))) return "in review";
   if (!approvalBody) return null;
@@ -142,7 +146,8 @@ export function parseConfluenceFile(source: ConfluenceExportConfig, rel: string,
   for (const m of content.matchAll(PAGE_LINK_RE)) {
     if (m[1] !== fm.id) edges.push({ src: id, dst: docId(source.name, `${m[1]}.md`), kind: "links_to" });
   }
-  for (const ref of findAllRefs(content, jiraRe)) edges.push({ src: id, dst: ref, kind: "references" });
+  // Capability paths are a spec-repo convention; in wiki text the same shape is just a URL path.
+  for (const ref of findAllRefs(content, jiraRe)) if (!ref.startsWith("CAP:")) edges.push({ src: id, dst: ref, kind: "references" });
 
   return {
     doc: {

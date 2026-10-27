@@ -53,7 +53,7 @@ describe("ingest", () => {
     const kinds = Object.fromEntries(
       (db.prepare("SELECT kind, count(*) n FROM entities GROUP BY kind").all() as { kind: string; n: number }[]).map((r) => [r.kind, r.n]),
     );
-    expect(kinds).toMatchObject({ requirement: 3, ac: 2, task: 2, capability: 1, domain: 1, test: 1 });
+    expect(kinds).toMatchObject({ requirement: 4, ac: 2, task: 2, capability: 1, domain: 1, test: 1 });
   });
 
   it("keeps the spec as the definition when another document tabulates the same id", () => {

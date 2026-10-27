@@ -3,10 +3,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { loadConfig } from "../config.ts";
 import { openDb } from "../db.ts";
-import { formatRequirement, formatResult, formatTrace } from "../format.ts";
+import { formatDrift, formatPrecedent, formatRequirement, formatResult, formatStandards, formatTrace } from "../format.ts";
 import { createEmbedder, createReranker, lazy } from "../models.ts";
+import { driftReport } from "../retrieval/drift.ts";
 import { getRequirement, trace } from "../retrieval/lookup.ts";
 import { search } from "../retrieval/search.ts";
+import { findPrecedent, getStandards } from "../retrieval/standards.ts";
 
 // stdout carries the MCP protocol; nothing else may print to it.
 const config = loadConfig();
@@ -18,7 +20,14 @@ const reranker = lazy(() => createReranker(config));
 // (~0.75 s). "rank": rerank 30 candidates (~3.7 s, no better ranking on the golden set). "0": no reranker.
 const RERANK = (process.env.SPEC_BRAIN_RERANK ?? "guard") as "guard" | "rank" | "0";
 
-const server = new McpServer({ name: "spec-brain", version: "0.1.0" });
+const models = {
+  embedder,
+  reranker: RERANK === "0" ? undefined : reranker,
+  rerankUse: RERANK === "rank" ? ("rank" as const) : ("guard" as const),
+  rerankCandidates: config.reranker.candidates,
+};
+
+const server = new McpServer({ name: "spec-brain", version: "0.2.0" });
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
 const readOnly = { readOnlyHint: true, openWorldHint: false };
 
@@ -58,10 +67,7 @@ server.registerTool(
         await search(db, query, {
           k,
           filters: { docTypes: doc_types, domain, sectionKinds: section_kinds, includeArchived: include_archived },
-          embedder,
-          reranker: RERANK === "0" ? undefined : reranker,
-          rerankUse: RERANK === "rank" ? "rank" : "guard",
-          rerankCandidates: config.reranker.candidates,
+          ...models,
         }),
       ),
     ),
@@ -102,6 +108,55 @@ server.registerTool(
     const t = trace(db, id, { depth, includeReferences: include_references });
     return text(t ? formatTrace(t) : `${id} is not in the index.`);
   },
+);
+
+server.registerTool(
+  "get_standards",
+  {
+    title: "Get standards",
+    description:
+      "What is our standard for a topic (logging, monitoring, API design, security, error handling, testing, deployment, ...)? " +
+      "Returns standards, guardrails and convention pages first, then the design-document and spec sections that applied them. " +
+      "When no standards page covers the topic it says so: then the second part is precedent, not an agreed standard. " +
+      "Use before designing or reviewing anything that a cross-team standard may govern.",
+    inputSchema: {
+      topic: z.string().min(2).describe("The concern, e.g. 'required log fields' or 'API versioning'"),
+      system: z.string().optional().describe("Narrow to a system or technology, e.g. 'Spring Boot', 'Kafka', 'Mulesoft'"),
+    },
+    annotations: readOnly,
+  },
+  async ({ topic, system }) => text(formatStandards(await getStandards(db, topic, { ...models, system }))),
+);
+
+server.registerTool(
+  "find_precedent",
+  {
+    title: "Find precedent",
+    description:
+      "Have we decided this before? Finds architecture approach documents (AADs), ADRs and assessments that address the question, " +
+      "one entry per document with its approval status (approved, conditional, draft, not approved) and the matching sections. " +
+      "Weigh approved decisions above drafts, and say when nothing was found instead of inferring a precedent.",
+    inputSchema: {
+      question: z.string().min(3).describe("The design question, e.g. 'how do we send files to vendors over SFTP'"),
+      docs: z.number().int().min(1).max(10).optional().describe("Documents to return (default 5)"),
+      include_archived: z.boolean().optional().describe("Include superseded and moved documents"),
+    },
+    annotations: readOnly,
+  },
+  async ({ question, docs, include_archived }) => text(formatPrecedent(await findPrecedent(db, question, { ...models, docs, includeArchived: include_archived }))),
+);
+
+server.registerTool(
+  "drift_report",
+  {
+    title: "Drift report",
+    description:
+      "Gaps in the architectural record: requirement/AC ids cited but never defined, approved or built requirements no acceptance criterion verifies, " +
+      "built acceptance criteria no test cites, standards pages that are empty placeholders, and wiki pages the indexed pages link to but the corpus does not hold.",
+    inputSchema: { limit: z.number().int().min(5).max(200).optional().describe("Items listed per section (default 25)") },
+    annotations: readOnly,
+  },
+  async ({ limit }) => text(formatDrift(driftReport(db), limit)),
 );
 
 await server.connect(new StdioServerTransport());

@@ -13,6 +13,7 @@ Widgets render from a cache so a configuration outage never blanks the dashboard
 | WDG-CCH-001 | When the configuration service is unreachable, the last known good widget config is served. |
 | WDG-CCH-002 | Cached entries expire after 300 seconds. |
 | WDG-CCH-003 | Cache misses are logged with the widget key and never include viewer identifiers. |
+| WDG-CCH-004 | Superseded by WDG-CCH-002. ~~Cached entries never expire.~~ |
 
 ## Security Requirements
 Log lines must not contain viewer identifiers or session tokens.

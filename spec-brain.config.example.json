@@ -28,7 +28,7 @@
       "project": "Team Wiki",
       "root": "corpus/confluence/team-wiki",
       "site": "example.atlassian.net",
-      "rootPageId": "123456789",
+      "rootPageIds": ["123456789"],
       "excludeTitles": [
         "^Trash$"
       ],

@@ -26,7 +26,8 @@ const ConfluenceExportSource = z.object({
   root: z.string(),
   /** Atlassian site host, e.g. "example.atlassian.net". */
   site: z.string(),
-  rootPageId: z.string().regex(/^\d+$/),
+  /** Each root page is synced with its whole subtree; several roots pick parts of a large space. */
+  rootPageIds: z.array(z.string().regex(/^\d+$/)).min(1),
   /** Pages whose own or ancestor title matches one of these regexes are not synced. */
   excludeTitles: z.array(z.string()).default([]),
   jiraProjects: z.array(z.string()).default([]),

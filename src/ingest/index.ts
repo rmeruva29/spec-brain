@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { Config, SddRepoConfig, SourceConfig } from "../config.ts";
 import type { DB } from "../db.ts";
@@ -10,7 +10,7 @@ import { parseSddFile, sha256, type ParsedDoc } from "./sdd.ts";
  * Part of every document's change hash: bump it whenever parsing or chunking changes, so the next
  * ingest re-processes files whose content did not change.
  */
-export const INGEST_VERSION = "5";
+export const INGEST_VERSION = "8";
 const docHash = (content: string) => sha256(`${INGEST_VERSION}\n${content}`);
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".turbo", "coverage", "out", ".gradle", "target"]);
@@ -24,6 +24,8 @@ export interface IngestStats {
   chunks: number;
   testFilesSeen: number;
   testFilesChanged: number;
+  /** Set when the source was left as it is, e.g. a wiki source that has not been synced yet. */
+  skipped?: string;
 }
 
 function* walk(root: string, dir: string, accept: (rel: string) => boolean): Generator<string> {
@@ -141,6 +143,10 @@ const parse = (source: SourceConfig, rel: string, content: string): ParsedDoc =>
 export function ingestSource(db: DB, source: SourceConfig, opts: { force?: boolean } = {}): IngestStats {
   const force = opts.force ?? false;
   const stats: IngestStats = { source: source.name, docsSeen: 0, docsChanged: 0, docsRemoved: 0, chunks: 0, testFilesSeen: 0, testFilesChanged: 0 };
+  if (source.kind === "confluence-export" && !existsSync(source.root)) {
+    stats.skipped = `not synced yet (no ${source.root}); run sync-confluence --source ${source.name}`;
+    return stats;
+  }
   const known = new Map(
     (db.prepare("SELECT id, path, content_hash FROM documents WHERE source = ?").all(source.name) as { id: string; path: string; content_hash: string }[]).map(
       (r) => [r.path, r],
@@ -174,5 +180,39 @@ export function ingestSource(db: DB, source: SourceConfig, opts: { force?: boole
 }
 
 export function ingestAll(db: DB, config: Config, opts: { force?: boolean } = {}): IngestStats[] {
-  return config.sources.map((s) => ingestSource(db, s, opts));
+  const stats = config.sources.map((s) => ingestSource(db, s, opts));
+  resolveWikiLinks(db, config.sources.filter((s) => s.kind === "confluence-export").map((s) => s.name));
+  return stats;
+}
+
+/**
+ * A wiki page links to other pages by id, and the ingester records the target under its own source.
+ * When the target was synced by another wiki source (another space or subtree of the same site), point
+ * the edge at that document instead, so links across spaces are followed rather than reported missing.
+ */
+export function resolveWikiLinks(db: DB, wikiSources: string[]): number {
+  if (wikiSources.length < 2) return 0;
+  const pageDoc = new Map<string, string>();
+  const pattern = /^DOC:([^:]+):(\d+)\.md$/;
+  for (const { id } of db.prepare("SELECT id FROM entities WHERE kind = 'document' AND id GLOB 'DOC:*:[0-9]*.md'").all() as { id: string }[]) {
+    const m = pattern.exec(id);
+    if (m && wikiSources.includes(m[1]!)) pageDoc.set(m[2]!, id);
+  }
+  const dangling = db
+    .prepare("SELECT e.src, e.dst, e.kind, e.origin FROM edges e LEFT JOIN entities n ON n.id = e.dst WHERE n.id IS NULL AND e.dst GLOB 'DOC:*:[0-9]*.md'")
+    .all() as { src: string; dst: string; kind: string; origin: string }[];
+  const insert = db.prepare("INSERT OR IGNORE INTO edges (src, dst, kind, origin) VALUES (?, ?, ?, ?)");
+  const remove = db.prepare("DELETE FROM edges WHERE src = ? AND dst = ? AND kind = ? AND origin = ?");
+  let moved = 0;
+  db.transaction(() => {
+    for (const e of dangling) {
+      const m = pattern.exec(e.dst);
+      const target = m && wikiSources.includes(m[1]!) ? pageDoc.get(m[2]!) : undefined;
+      if (!target || target === e.dst) continue;
+      insert.run(e.src, target, e.kind, e.origin);
+      remove.run(e.src, e.dst, e.kind, e.origin);
+      moved++;
+    }
+  })();
+  return moved;
 }

@@ -22,6 +22,9 @@ pnpm ingest                                                  # incremental; --fo
 pnpm cli get WDG-CCH-001
 pnpm cli trace AC-WDG-CCH-001 --depth 2
 pnpm cli search "what happens when the config service is down"
+pnpm cli standards "required log fields"
+pnpm cli precedent "how do we send files to vendors over SFTP"
+pnpm cli drift
 pnpm cli stats
 ```
 
@@ -31,7 +34,16 @@ pnpm cli stats
 claude mcp add spec-brain -- /absolute/path/to/spec-brain/bin/spec-brain-mcp
 ```
 
-Tools: `search_specs`, `get_requirement`, `trace`. All are read-only and every result leads with a `path#anchor` citation and the document's status. `search_specs` reranks by default; set `SPEC_BRAIN_RERANK=0` for faster, unreranked results.
+| Tool | Answers |
+|---|---|
+| `search_specs` | Anything: ids resolve exactly, the rest is hybrid keyword + vector search with filters on document type, domain and section kind |
+| `get_requirement` | One requirement / AC / task / capability with the ACs, plan tasks, Jira issues and tests linked to it |
+| `trace` | Impact analysis: walk requirement → ACs → tasks → Jira → tests and task dependencies |
+| `get_standards` | "What is our standard for X?": standards, guardrails and convention pages first, then the design and spec sections that applied them; says so when no standard exists |
+| `find_precedent` | "Have we decided this before?": decision records (AADs, ADRs, assessments) one per document, with approval status |
+| `drift_report` | Holes in the record: ids cited but undefined, committed requirements no AC verifies, built ACs no test cites, empty standards pages, linked wiki pages missing from the corpus |
+
+All are read-only and every result leads with a citation (`path#anchor` or page URL) and the document's status. Searches run a reranker relevance check by default and mark results low confidence when nothing matches; set `SPEC_BRAIN_RERANK=0` to skip it or `rank` to reorder by it.
 
 ## What gets indexed
 
@@ -46,10 +58,10 @@ Two source kinds (see `spec-brain.config.example.json`).
 
 ### `confluence-export`
 
-A wiki page tree, synced to local markdown (`<pageId>.md` with frontmatter: title, URL, ancestors, last modified):
+One or more wiki page trees (`rootPageIds`; several roots pick the relevant parts of a large space), synced to local markdown (`<pageId>.md` with frontmatter: title, URL, ancestors, last modified):
 
 ```sh
-pnpm cli sync-confluence --dry-run     # list the tree and show what would change
+pnpm cli sync-confluence --dry-run     # list the trees and show what would change (--source <name> for one source)
 pnpm cli sync-confluence --limit 10    # try a few pages first
 pnpm cli sync-confluence               # everything new or changed since the last sync
 pnpm ingest
@@ -57,7 +69,18 @@ pnpm ingest
 
 The sync never handles an Atlassian token. It starts a headless Claude Code session (`claude -p`, Haiku) that calls the Atlassian MCP server you have already authorised, and reads the raw tool results from its `stream-json` output, so page text is never retyped by a model. It is incremental by each page's last-modified time, removes pages that left the tree, and skips subtrees whose title matches `excludeTitles`. Run it from a normal terminal: Claude Code refuses to start a nested session.
 
-Pages are typed (`aad` architecture approach documents, `standard` guardrails/guidelines/policies, `template`, `assessment`, `strategy`, `diagram`, `wiki`) and given a status from the title (`[DRAFT]`, `(Moved)`), the tree ("Pending Review") and the document-acceptance table (approved / conditional / not approved). Sections are chunked below the chapter level, empty template headings and revision tables are dropped, and every chunk carries a section kind from a taxonomy shared with specs (`logging`, `monitoring`, `security`, `nfr`, `decision`, `design`, …) so `search_specs` can filter on it. Citations are the page URL plus the Confluence heading anchor.
+Pages are typed (`aad` architecture approach documents, `standard` guardrails/guidelines/policies, `template`, `assessment`, `strategy`, `diagram`, `wiki`) and given a status from the title (`[DRAFT]`, `(Moved)`), the tree ("Pending Review") and the document-acceptance table (approved / conditional / not approved). Sections are chunked below the chapter level, empty template headings and revision tables are dropped, and every chunk carries a section kind from a taxonomy shared with specs (`logging`, `monitoring`, `security`, `nfr`, `decision`, `design`, …) so `search_specs` can filter on it. Citations are the page URL plus the Confluence heading anchor. Links between pages become graph edges, resolved across wiki sources by page id.
+
+Requirement and AC rows whose text opens "Superseded by …" or "Withdrawn …" keep their ids for lookups and trace but drop out of default search.
+
+## Standards distillation
+
+```sh
+pnpm cli distill                                   # default topics: logging, monitoring, API design, security, …
+pnpm cli distill "feature flags,caching"           # or your own, comma separated
+```
+
+writes one evidence pack per topic to `reports/standards/` (gitignored): the standards pages, the design sections that applied them and the decision records, each cited, followed by the full text of the top standards pages (search keeps only the best-matching sections of a page; a rule set needs all of them). Give a pack to an agent or a reviewer to draft candidate `STD-<TOPIC>-nnn` statements that cite their sources; where a topic has no standards page, the pack says so and the statements are proposals drawn from precedent.
 
 Re-ingest is incremental by content hash; each file's chunks, entities and edges are replaced as a unit. `ingest --rebuild` recreates the index after a schema change.
 
@@ -78,4 +101,5 @@ This repository holds **code only**. `data/`, `corpus/`, `reports/`, `eval/golde
 1. ✅ SDD ingest, entity graph, id lookup, trace, BM25 search, MCP server
 2. ✅ Confluence source: MCP-relayed sync to local markdown, page typing and approval status, shared section taxonomy
 3. ✅ Local embeddings + sqlite-vec, RRF fusion, optional cross-encoder rerank, low-confidence signal; evaluation harness with ablations against plain grep
-4. `get_standards`, `find_precedent`, drift report (undefined references, ACs without tests, status vs delivery), decision ledger
+4. ✅ `get_standards`, `find_precedent`, drift report, multi-root wiki sources, standards evidence packs
+5. Decision ledger (every decision with status, date and superseding decision), status-vs-delivery drift (spec says implemented, Jira says open), a `review-*` agent run with and without the MCP server

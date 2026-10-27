@@ -4,11 +4,13 @@ import { loadConfig } from "./config.ts";
 import { syncConfluence } from "./confluence/sync.ts";
 import { calibrate, loadGolden, runEval, summarize, type EvalMode } from "./eval.ts";
 import { deleteDb, openDb } from "./db.ts";
-import { formatRequirement, formatResult, formatTrace } from "./format.ts";
+import { formatDrift, formatPrecedent, formatRequirement, formatResult, formatStandards, formatTrace } from "./format.ts";
 import { ingestAll } from "./ingest/index.ts";
 import { createEmbedder, createReranker, lazy } from "./models.ts";
+import { driftReport } from "./retrieval/drift.ts";
 import { getRequirement, trace } from "./retrieval/lookup.ts";
 import { search, type Mode } from "./retrieval/search.ts";
+import { findPrecedent, getStandards, standardsPages } from "./retrieval/standards.ts";
 import { EmbeddingCache, embedPending } from "./vectors.ts";
 
 const USAGE = `spec-brain <command>
@@ -24,6 +26,11 @@ const USAGE = `spec-brain <command>
                                    reranker's relevance check, --rerank reorders by it
   eval [--golden file] [--modes grep,bm25,vector,hybrid,hybrid+guard,hybrid+rerank]
                                    score retrieval on a golden question set (report in reports/)
+  standards <topic> [--system s]   standards and guardrails on a topic, then how designs applied them
+  precedent <question>             earlier decision records (AADs, ADRs) on the question, per document
+  drift                            undefined ids, unverified requirements, untested criteria, empty
+                                   standards pages, linked wiki pages missing from the corpus
+  distill [topic,topic,...]        evidence pack per standards topic (reports/standards/) for drafting
   get <id>                         requirement / AC / task / capability with its traceability
   trace <id> [--depth n] [--refs]  walk the traceability graph
   stats                            index counts`;
@@ -47,6 +54,7 @@ const { positionals, values } = parseArgs({
     type: { type: "string", multiple: true },
     depth: { type: "string", default: "2" },
     refs: { type: "boolean", default: false },
+    system: { type: "string" },
   },
 });
 const [command, ...rest] = positionals;
@@ -54,6 +62,18 @@ const arg = rest.join(" ");
 const config = loadConfig();
 const embedder = lazy(() => createEmbedder(config));
 const reranker = lazy(() => createReranker(config));
+const guarded = { embedder, reranker, rerankUse: "guard" as const, rerankCandidates: config.reranker.candidates };
+
+const DISTILL_TOPICS = [
+  "logging standard and required log fields",
+  "monitoring and Dynatrace alerting for services",
+  "REST API design, versioning and contracts",
+  "security, secrets management and authentication",
+  "error handling, retries and dead-letter queues",
+  "testing and quality gates",
+  "deployment, release and rollback",
+  "database and data migration",
+];
 
 async function embed(db: ReturnType<typeof openDb>) {
   const cache = new EmbeddingCache(config.embeddingCachePath);
@@ -88,6 +108,10 @@ switch (command) {
     const db = openDb(config.dbPath);
     const started = Date.now();
     for (const s of ingestAll(db, config, { force: values.force || values.rebuild })) {
+      if (s.skipped) {
+        console.log(`${s.source}: skipped, ${s.skipped}`);
+        continue;
+      }
       console.log(
         `${s.source}: ${s.docsSeen} docs (${s.docsChanged} changed, ${s.docsRemoved} removed), ${s.chunks} chunks, ` +
           `${s.testFilesSeen} test files (${s.testFilesChanged} changed)`,
@@ -113,6 +137,39 @@ switch (command) {
     });
     console.log(`mode: ${result.mode}${result.confidence !== null ? ` · confidence ${result.confidence.toFixed(2)}` : ""}\n`);
     console.log(formatResult(result));
+    break;
+  }
+  case "standards": {
+    console.log(formatStandards(await getStandards(openDb(config.dbPath, { readonly: true }), arg, { ...guarded, system: values.system })));
+    break;
+  }
+  case "precedent": {
+    console.log(formatPrecedent(await findPrecedent(openDb(config.dbPath, { readonly: true }), arg, guarded)));
+    break;
+  }
+  case "drift": {
+    console.log(formatDrift(driftReport(openDb(config.dbPath, { readonly: true }))));
+    break;
+  }
+  case "distill": {
+    // Evidence for drafting STD-* statements by hand or with an agent; stays in the gitignored reports/.
+    const db = openDb(config.dbPath, { readonly: true });
+    const topics = arg ? arg.split(",").map((t) => t.trim()) : DISTILL_TOPICS;
+    mkdirSync("reports/standards", { recursive: true });
+    for (const topic of topics) {
+      const file = `reports/standards/${topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}.md`;
+      const found = await getStandards(db, topic, { ...guarded, k: 8 });
+      const precedent = formatPrecedent(await findPrecedent(db, topic, { ...guarded, docs: 8 }));
+      const pages = standardsPages(db, found)
+        .map((p) => `## ${p.title ?? p.path} · ${p.status ? `status: ${p.status}` : "approval not recorded"} · ${p.url ?? p.path}\n\n${p.text}`)
+        .join("\n\n");
+      writeFileSync(
+        file,
+        `# Evidence: ${topic}\n\n${formatStandards(found)}\n\n== Decision records ==\n${precedent}\n` +
+          (pages ? `\n== Full text of the primary standards pages ==\n\n${pages}\n` : ""),
+      );
+      console.log(`${topic} → ${file}`);
+    }
     break;
   }
   case "get": {

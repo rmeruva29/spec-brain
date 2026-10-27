@@ -18,7 +18,7 @@ const source: ConfluenceExportConfig = {
   project: "Example Wiki",
   root: join(import.meta.dirname, "fixtures/wiki"),
   site: "example.atlassian.net",
-  rootPageId: "1001",
+  rootPageIds: ["1001"],
   excludeTitles: ["^Trash$"],
   jiraProjects: ["ACME"],
 };
@@ -78,11 +78,27 @@ describe("sync planning", () => {
       syncedAt: null,
       pages: { "1": { title: "Home", lastModified: "x", version: 1 }, "2": { title: "", lastModified: "2026-01-01", version: 1 }, "99": { title: "gone", lastModified: "", version: 1 } },
     };
-    const plan = planSync({ id: "1", title: "Home" }, listing, manifest, ["^Trash$"]);
+    const plan = planSync([{ id: "1", title: "Home", listing }], manifest, ["^Trash$"]);
     expect(plan.toFetch).toEqual(["3"]);
     expect(plan.toDelete).toEqual(["99"]);
     expect(plan.excluded).toBe(2);
     expect(plan.wanted.get("3")!.ancestors).toEqual(["Home", "Architecture Approach Documents"]);
+  });
+
+  it("syncs several subtrees as one source, fetching roots first and keeping pages any root still holds", () => {
+    const manifest = { syncedAt: null, pages: { "2": { title: "", lastModified: "2026-01-01", version: 1 }, "99": { title: "gone", lastModified: "", version: 1 } } };
+    const plan = planSync(
+      [
+        { id: "2", title: "AADs", listing: [page("3", "Architecture Approach - Relay", "2", "2026-02-01")] },
+        { id: "50", title: "Logging", listing: [page("51", "JSON Logging in Java", "50"), page("3", "Architecture Approach - Relay", "2", "2026-02-01")] },
+      ],
+      manifest,
+      [],
+    );
+    expect(plan.toFetch).toEqual(["50", "3", "51"]);
+    expect(plan.toDelete).toEqual(["99"]);
+    expect(plan.wanted.get("3")!.root).toBe("2");
+    expect(plan.wanted.get("51")!.ancestors).toEqual(["Logging"]);
   });
 
   it("renders frontmatter the ingester reads back", () => {
@@ -97,9 +113,14 @@ describe("page classification", () => {
   it("derives type and status from title, tree and the approval table", () => {
     expect(classifyPage("Architecture Approach - Payment Retry (ARB amendment)", [])).toBe("aad");
     expect(classifyPage("Coding Standards and Specifications | Frameworks", ["Team", "Technology Guardrails, Guidelines, Policies, and SOPs"])).toBe("standard");
+    expect(classifyPage("Logging Best Practices and Standardization", ["Platform"])).toBe("standard");
+    expect(classifyPage("Alerting Guidance for Dev Teams", ["Platform"])).toBe("standard");
+    expect(classifyPage("ADR - Log Shipping Strategy", ["Platform"])).toBe("decision");
+    expect(classifyPage("JSON Logging in Java Applications", ["Platform", "Logging Best Practices and Standardization"])).toBe("standard");
     expect(classifyPage("Release Documentation(Template)", ["Team", "Templates"])).toBe("template");
     expect(classifyPage("Architecture Approach - Template", ["Team", "Templates"])).toBe("template");
     expect(pageStatus("[DRAFT] Architecture Approach - X", [], null)).toBe("draft");
+    expect(pageStatus("Patching Policy (DRAFT)", [], null)).toBe("draft");
     expect(pageStatus("Architecture Approach - X (Moved)", [], null)).toBe("superseded");
     expect(pageStatus("Scoping", ["Team", "Pending Review"], null)).toBe("in review");
     // The template's header lozenge text "NOT APPROVEDCONDITIONALAPPROVED" is not a status.
