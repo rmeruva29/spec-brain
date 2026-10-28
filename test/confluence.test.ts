@@ -116,12 +116,18 @@ describe("page classification", () => {
     expect(classifyPage("Logging Best Practices and Standardization", ["Platform"])).toBe("standard");
     expect(classifyPage("Alerting Guidance for Dev Teams", ["Platform"])).toBe("standard");
     expect(classifyPage("ADR - Log Shipping Strategy", ["Platform"])).toBe("decision");
+    expect(classifyPage("Test Automation Framework – Guiding Principles", ["QA"])).toBe("standard");
+    expect(classifyPage("API Testing Patterns for Kotlin + REST Assured", ["QA"])).toBe("standard");
+    expect(classifyPage("Service Level Agreements", ["QA", "Performance/Load Testing"])).toBe("standard");
+    expect(classifyPage("Widget Service — API Contracts", ["QA", "Widget Service"])).toBe("wiki");
     expect(classifyPage("JSON Logging in Java Applications", ["Platform", "Logging Best Practices and Standardization"])).toBe("standard");
     expect(classifyPage("Release Documentation(Template)", ["Team", "Templates"])).toBe("template");
     expect(classifyPage("Architecture Approach - Template", ["Team", "Templates"])).toBe("template");
     expect(pageStatus("[DRAFT] Architecture Approach - X", [], null)).toBe("draft");
     expect(pageStatus("Patching Policy (DRAFT)", [], null)).toBe("draft");
     expect(pageStatus("Architecture Approach - X (Moved)", [], null)).toBe("superseded");
+    expect(pageStatus("Generator Overview", [], null, "ABANDONED — superseded as of June 2026")).toBe("superseded");
+    expect(pageStatus("Retry Overview", [], null, "Retries are deprecated in favour of the DLT")).toBe(null);
     expect(pageStatus("Scoping", ["Team", "Pending Review"], null)).toBe("in review");
     // The template's header lozenge text "NOT APPROVEDCONDITIONALAPPROVED" is not a status.
     expect(pageStatus("X", [], "| Dept | Status |\n|---|---|\n| EA | NOT APPROVEDCONDITIONALAPPROVED |")).toBe("unapproved");
@@ -188,6 +194,12 @@ describe("wiki ingest", () => {
   it("links pages to their parent, linked pages, Jira issues and spec ids", () => {
     const out = neighbors(db, "DOC:wiki:1002.md").filter((n) => n.direction === "out").map((n) => `${n.edge}:${n.id}`);
     expect(out.sort()).toEqual(["links_to:DOC:wiki:1003.md", "part_of:DOC:wiki:1001.md", "references:ACME-42", "references:WDG-CCH-001"]);
+  });
+
+  it("drops pages an exclude pattern now matches without waiting for the next sync", () => {
+    const stats = ingestSource(db, { ...source, excludeTitles: ["relay topology"] });
+    expect(stats).toMatchObject({ docsSeen: 2, docsRemoved: 1, docsExcluded: 1 });
+    expect(db.prepare("SELECT path FROM documents ORDER BY path").all()).toEqual([{ path: "1001.md" }, { path: "1002.md" }]);
   });
 
   it("cites the page URL with the Confluence heading anchor and filters by section kind", async () => {

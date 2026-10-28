@@ -113,7 +113,8 @@ switch (command) {
         continue;
       }
       console.log(
-        `${s.source}: ${s.docsSeen} docs (${s.docsChanged} changed, ${s.docsRemoved} removed), ${s.chunks} chunks, ` +
+        `${s.source}: ${s.docsSeen} docs (${s.docsChanged} changed, ${s.docsRemoved} removed` +
+          `${s.docsExcluded ? `, ${s.docsExcluded} excluded by title` : ""}), ${s.chunks} chunks, ` +
           `${s.testFilesSeen} test files (${s.testFilesChanged} changed)`,
       );
     }

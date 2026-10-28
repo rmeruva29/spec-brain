@@ -1,16 +1,17 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import type { Config, SddRepoConfig, SourceConfig } from "../config.ts";
+import { titleExcluder, type Config, type SddRepoConfig, type SourceConfig } from "../config.ts";
 import type { DB } from "../db.ts";
 import { findAcIds, findRequirementIds, testId } from "../ids.ts";
 import { parseConfluenceFile } from "./confluence.ts";
+import { parseFrontmatter } from "./markdown.ts";
 import { parseSddFile, sha256, type ParsedDoc } from "./sdd.ts";
 
 /**
  * Part of every document's change hash: bump it whenever parsing or chunking changes, so the next
  * ingest re-processes files whose content did not change.
  */
-export const INGEST_VERSION = "8";
+export const INGEST_VERSION = "9";
 const docHash = (content: string) => sha256(`${INGEST_VERSION}\n${content}`);
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".turbo", "coverage", "out", ".gradle", "target"]);
@@ -24,6 +25,8 @@ export interface IngestStats {
   chunks: number;
   testFilesSeen: number;
   testFilesChanged: number;
+  /** Synced wiki pages left out because `excludeTitles` now matches them. */
+  docsExcluded: number;
   /** Set when the source was left as it is, e.g. a wiki source that has not been synced yet. */
   skipped?: string;
 }
@@ -142,11 +145,13 @@ const parse = (source: SourceConfig, rel: string, content: string): ParsedDoc =>
 
 export function ingestSource(db: DB, source: SourceConfig, opts: { force?: boolean } = {}): IngestStats {
   const force = opts.force ?? false;
-  const stats: IngestStats = { source: source.name, docsSeen: 0, docsChanged: 0, docsRemoved: 0, chunks: 0, testFilesSeen: 0, testFilesChanged: 0 };
+  const stats: IngestStats = { source: source.name, docsSeen: 0, docsChanged: 0, docsRemoved: 0, chunks: 0, testFilesSeen: 0, testFilesChanged: 0, docsExcluded: 0 };
   if (source.kind === "confluence-export" && !existsSync(source.root)) {
     stats.skipped = `not synced yet (no ${source.root}); run sync-confluence --source ${source.name}`;
     return stats;
   }
+  // The next sync deletes excluded pages; until then they stay on disk and are skipped here.
+  const excluded = source.kind === "confluence-export" ? titleExcluder(source.excludeTitles) : () => false;
   const known = new Map(
     (db.prepare("SELECT id, path, content_hash FROM documents WHERE source = ?").all(source.name) as { id: string; path: string; content_hash: string }[]).map(
       (r) => [r.path, r],
@@ -155,9 +160,16 @@ export function ingestSource(db: DB, source: SourceConfig, opts: { force?: boole
   db.transaction(() => {
     const seen = new Set<string>();
     for (const rel of listMarkdown(source)) {
+      const content = readFileSync(join(source.root, rel), "utf8");
+      if (source.kind === "confluence-export") {
+        const fm = parseFrontmatter(content).frontmatter;
+        if (excluded(fm.title ?? "", (fm.ancestors ?? "").split(" › ").filter(Boolean))) {
+          stats.docsExcluded++;
+          continue;
+        }
+      }
       seen.add(rel);
       stats.docsSeen++;
-      const content = readFileSync(join(source.root, rel), "utf8");
       const hash = docHash(content);
       if (!force && known.get(rel)?.content_hash === hash) continue;
       const parsed = parse(source, rel, content);

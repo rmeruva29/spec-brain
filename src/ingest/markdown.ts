@@ -29,7 +29,7 @@ export function slugify(heading: string): string {
     .replace(/\s/g, "-");
 }
 
-function parseFrontmatter(md: string): { frontmatter: Record<string, string>; rest: string } {
+export function parseFrontmatter(md: string): { frontmatter: Record<string, string>; rest: string } {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(md);
   if (!m) return { frontmatter: {}, rest: md };
   const frontmatter: Record<string, string> = {};

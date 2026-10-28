@@ -24,7 +24,7 @@ export function classifyPage(title: string, ancestors: string[]): string {
   if (/^\s*(\[draft\]\s*)?architect(ure|ural) approach\b/i.test(title)) return "aad";
   if (/^\s*ADR\b|architecture decision record/i.test(title)) return "decision";
   if (
-    /guard ?rails?|guidelines|guidance|polic(y|ies)|standards?\b|standardi[sz]ation|best practices|conventions|sops?\b|specification|checklist|contracts/i.test(title) ||
+    /guard ?rails?|guidelines|guidance|guiding principles|polic(y|ies)|standards?\b|standardi[sz]ation|best practices|conventions|testing patterns|service level agreements|sops?\b|specification|checklist|service-to-service contracts/i.test(title) ||
     /guardrails|guidelines|standardi[sz]ation/i.test(path)
   ) {
     return "standard";
@@ -37,10 +37,13 @@ export function classifyPage(title: string, ancestors: string[]): string {
 
 const clean = (cell: string) => cell.replace(/[*_`]/g, "").trim().toUpperCase();
 
-/** Status from the title ([DRAFT], (Moved)), the tree (Pending Review) and the "Document Acceptance" approval table. */
-export function pageStatus(title: string, ancestors: string[], approvalBody: string | null): string | null {
+/**
+ * Status from the title ([DRAFT], (Moved)), a banner opening the page ("ABANDONED — superseded…"), the tree
+ * (Pending Review) and the "Document Acceptance" approval table.
+ */
+export function pageStatus(title: string, ancestors: string[], approvalBody: string | null, firstLine = ""): string | null {
   if (/[[(]draft[\])]|\(not ready/i.test(title)) return "draft";
-  if (/\(moved\)/i.test(title)) return "superseded";
+  if (/\(moved\)/i.test(title) || /^\W*(abandoned|superseded|deprecated|obsolete)\b/i.test(firstLine)) return "superseded";
   if (ancestors.some((a) => /pending review/i.test(a))) return "in review";
   if (!approvalBody) return null;
   const cells = extractTables(approvalBody).tables.flatMap((t) => t.rows.flat().map(clean));
@@ -107,7 +110,8 @@ export function parseConfluenceFile(source: ConfluenceExportConfig, rel: string,
   const ancestors = (fm.ancestors ?? "").split(" › ").filter(Boolean);
   const docType = classifyPage(title, ancestors);
   const approval = md.sections.find((s) => /document acceptance|approval/i.test(s.heading));
-  const status = pageStatus(title, ancestors, approval?.body ?? null);
+  const firstLine = (md.preamble || md.sections[0]?.heading || "").trim().split("\n")[0]!;
+  const status = pageStatus(title, ancestors, approval?.body ?? null, firstLine);
   const updated = (fm.last_modified ?? "").slice(0, 7);
   const id = docId(source.name, rel);
   const jiraRe = jiraRegex(source.jiraProjects);

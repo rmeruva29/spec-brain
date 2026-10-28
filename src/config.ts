@@ -28,10 +28,16 @@ const ConfluenceExportSource = z.object({
   site: z.string(),
   /** Each root page is synced with its whole subtree; several roots pick parts of a large space. */
   rootPageIds: z.array(z.string().regex(/^\d+$/)).min(1),
-  /** Pages whose own or ancestor title matches one of these regexes are not synced. */
+  /** Pages whose own or ancestor title matches one of these regexes are not synced or indexed. */
   excludeTitles: z.array(z.string()).default([]),
   jiraProjects: z.array(z.string()).default([]),
 });
+
+/** Matches a page against `excludeTitles`; sync uses it to skip fetching, ingest to drop pages synced before a pattern was added. */
+export function titleExcluder(patterns: string[]): (title: string, ancestors: string[]) => boolean {
+  const res = patterns.map((p) => new RegExp(p, "i"));
+  return (title, ancestors) => [title, ...ancestors].some((t) => res.some((re) => re.test(t)));
+}
 
 const Source = z.discriminatedUnion("kind", [SddRepoSource, ConfluenceExportSource]);
 

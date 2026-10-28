@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ConfluenceExportConfig } from "../config.ts";
+import { titleExcluder, type ConfluenceExportConfig } from "../config.ts";
 import { extractJson, runRelay, type RelayResult } from "./relay.ts";
 
 export interface ListedPage {
@@ -46,7 +46,7 @@ const tool = (name: string) => `mcp__${MCP_SERVER}__${name}`;
  * lastModified differs from the manifest. Pages that left all the trees are deleted.
  */
 export function planSync(roots: SyncRoot[], manifest: Manifest, excludeTitles: string[], force = false): SyncPlan {
-  const exclude = excludeTitles.map((p) => new RegExp(p, "i"));
+  const excludedPage = titleExcluder(excludeTitles);
   const rootIds = new Set(roots.map((r) => r.id));
   // Roots come first so their real titles are known before any page beneath them is written.
   const wanted: SyncPlan["wanted"] = new Map(
@@ -72,7 +72,7 @@ export function planSync(roots: SyncRoot[], manifest: Manifest, excludeTitles: s
     for (const p of root.listing) {
       if (p.type !== "page" || wanted.has(p.id)) continue;
       const ancestors = ancestorsOf(p);
-      if ([p.title, ...ancestors].some((t) => exclude.some((re) => re.test(t)))) {
+      if (excludedPage(p.title, ancestors)) {
         excluded++;
         continue;
       }
