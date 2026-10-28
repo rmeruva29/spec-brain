@@ -35,10 +35,23 @@ export interface StandardsResult {
   sectionKinds: string[];
 }
 
+/**
+ * The reranker scores a bare topic label ("database and data migration") against standards prose poorly in
+ * both directions: covered topics scored 0.04, uncovered ones up to 0.14. Scored against the question,
+ * uncovered topics stayed at or below 0.045 and covered ones started at 0.104 (33 probe topics, 2026-10-28).
+ * Retrieval keeps the topic itself, since the question's extra words change which pages come back. A label
+ * joining several themes can still score low ("testing and quality gates": 0.015), so name what is covered.
+ */
+const standardsQuestion = (topic: string) => `What is our standard for ${topic}?`;
+const STANDARDS_GUARD = 0.05;
+
 export async function getStandards(db: DB, topic: string, opts: Options & { system?: string } = {}): Promise<StandardsResult> {
   const query = opts.system ? `${topic} ${opts.system}` : topic;
   const sectionKinds = sectionKindsFor(topic);
-  const standards = await search(db, query, { ...opts, k: opts.k ?? 6, filters: { docTypes: STANDARD_TYPES } });
+  const standards = await search(db, query, { ...opts, rerankQuery: standardsQuestion(query), k: opts.k ?? 6, filters: { docTypes: STANDARD_TYPES } });
+  if (opts.reranker && opts.rerankUse === "guard" && standards.confidence !== null && standards.confidence < 1) {
+    standards.lowConfidence = standards.confidence < STANDARDS_GUARD;
+  }
   let practice = await search(db, query, { ...opts, k: 6, filters: { docTypes: PRACTICE_TYPES, sectionKinds: sectionKinds.length ? sectionKinds : undefined } });
   if (sectionKinds.length && !practice.hits.length) practice = await search(db, query, { ...opts, k: 6, filters: { docTypes: PRACTICE_TYPES } });
   return { topic, standards, practice, sectionKinds };

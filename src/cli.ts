@@ -68,9 +68,9 @@ const DISTILL_TOPICS = [
   "logging standard and required log fields",
   "monitoring and Dynatrace alerting for services",
   "REST API design, versioning and contracts",
-  "security, secrets management and authentication",
+  "application security, vulnerabilities, secrets management and authentication",
   "error handling, retries and dead-letter queues",
-  "testing and quality gates",
+  "testing, test automation and quality gates",
   "deployment, release and rollback",
   "database and data migration",
 ];

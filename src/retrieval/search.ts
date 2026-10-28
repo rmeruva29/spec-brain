@@ -124,6 +124,8 @@ export interface SearchOptions {
    */
   rerankUse?: "rank" | "guard";
   rerankCandidates?: number;
+  /** Text the reranker scores candidates against, when it should differ from the retrieval query. */
+  rerankQuery?: string;
   /** At most this many chunks per document, so one long page cannot fill every slot. */
   maxPerDoc?: number;
 }
@@ -211,7 +213,7 @@ export async function search(db: DB, query: string, opts: SearchOptions = {}): P
     const reranker = await opts.reranker();
     const candidates = capPerDoc(ranked, opts.maxPerDoc ?? 3).slice(0, guard ? GUARD_CANDIDATES : (opts.rerankCandidates ?? 30));
     const scores = await reranker.score(
-      query,
+      opts.rerankQuery ?? query,
       candidates.map((h) => `${h.context}\n${h.text}`.slice(0, 2000)),
     );
     if (guard) confidence = Math.max(...scores);
