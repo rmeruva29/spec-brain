@@ -85,11 +85,13 @@ export interface FullDocument {
 /**
  * Whole text of the standards pages behind the top hits, in page order. Search returns a few chunks
  * per page; a reviewer drafting rules from a standard needs all of it, including the sections that
- * did not match the query (the data model, the levels, the configuration).
+ * did not match the query (the data model, the levels, the configuration). A topic can rest on many
+ * pages (testing: QA guides, the SDLC, the work-flow page, the vulnerability guidelines), and relevance
+ * scores do not separate the minor ones from noise, so the cut is generous and noise comes last.
  */
 export function standardsPages(db: DB, r: StandardsResult, opts: { maxDocs?: number; maxChars?: number } = {}): FullDocument[] {
   if (r.standards.lowConfidence) return [];
-  const docs = [...new Map(r.standards.hits.map((h) => [`${h.source}:${h.path}`, h])).values()].slice(0, opts.maxDocs ?? 3);
+  const docs = [...new Map(r.standards.hits.map((h) => [`${h.source}:${h.path}`, h])).values()].slice(0, opts.maxDocs ?? 8);
   const chunks = db.prepare(
     "SELECT c.section, c.text FROM chunks c JOIN documents d ON d.id = c.doc_id WHERE d.source = ? AND d.path = ? ORDER BY c.ord",
   );

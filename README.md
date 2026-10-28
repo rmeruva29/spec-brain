@@ -80,7 +80,7 @@ pnpm cli distill                                   # default topics: logging, mo
 pnpm cli distill "feature flags,caching"           # or your own, comma separated
 ```
 
-writes one evidence pack per topic to `reports/standards/` (gitignored): the standards pages, the design sections that applied them and the decision records, each cited, followed by the full text of the top standards pages (search keeps only the best-matching sections of a page; a rule set needs all of them). Give a pack to an agent or a reviewer to draft candidate `STD-<TOPIC>-nnn` statements that cite their sources; where a topic has no standards page, the pack says so and the statements are proposals drawn from precedent.
+writes one evidence pack per topic to `reports/standards/` (gitignored): the standards pages, the design sections that applied them and the decision records, each cited, followed by the full text of up to eight standards pages, each capped at 80k characters (search keeps only the best-matching sections of a page; a rule set needs all of them). Give a pack to an agent or a reviewer to draft candidate `STD-<TOPIC>-nnn` statements that cite their sources; where a topic has no standards page, the pack says so and the statements are proposals drawn from precedent.
 
 Re-ingest is incremental by content hash; each file's chunks, entities and edges are replaced as a unit. `ingest --rebuild` recreates the index after a schema change.
 

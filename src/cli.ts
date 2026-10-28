@@ -161,7 +161,8 @@ switch (command) {
       const file = `reports/standards/${topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}.md`;
       const found = await getStandards(db, topic, { ...guarded, k: 8 });
       const precedent = formatPrecedent(await findPrecedent(db, topic, { ...guarded, docs: 8 }));
-      const pages = standardsPages(db, found)
+      // Up to three excerpts per page means k=8 can name as few as three pages; search deeper to pick the full-text pages.
+      const pages = standardsPages(db, await getStandards(db, topic, { ...guarded, k: 16 }))
         .map((p) => `## ${p.title ?? p.path} · ${p.status ? `status: ${p.status}` : "approval not recorded"} · ${p.url ?? p.path}\n\n${p.text}`)
         .join("\n\n");
       writeFileSync(
